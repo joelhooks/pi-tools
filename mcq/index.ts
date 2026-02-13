@@ -72,6 +72,23 @@ function progressBar(current: number, total: number, width: number, fg: (c: any,
 // ── Extension ────────────────────────────────────────────────────────
 
 export default function mcq(pi: ExtensionAPI) {
+	// ── System prompt nudge ──────────────────────────────────────────
+
+	pi.on("before_agent_start", async (event) => {
+		return {
+			systemPrompt:
+				event.systemPrompt +
+				"\n\n## Clarification via MCQ\n" +
+				"When a user request is ambiguous, under-specified, or has multiple valid approaches, " +
+				"use the `mcq` tool to quickly gather intent before proceeding. " +
+				"This is faster than asking open-ended questions — the user just presses 1-4. " +
+				"Good triggers: vague feature requests, architectural choices with tradeoffs, " +
+				"config with many options, or any time you'd otherwise guess and risk going the wrong direction. " +
+				"Keep it to 2-5 questions. Recommend an option when you have a informed opinion. " +
+				"Don't use mcq for simple yes/no — just ask directly.",
+		};
+	});
+
 	pi.registerTool({
 		name: "mcq",
 		label: "MCQ",
@@ -250,6 +267,15 @@ export default function mcq(pi: ExtensionAPI) {
 						return;
 					}
 
+					// Enter accepts recommended option
+					if (matchesKey(data, Key.enter)) {
+						const q = questions[currentQ];
+						if (q.recommended && q.recommended >= 1 && q.recommended <= q.options.length) {
+							selectOption(q.recommended);
+						}
+						return;
+					}
+
 					// Number keys for instant selection
 					if (flashIndex !== null) return;
 					const n = parseInt(data);
@@ -369,17 +395,18 @@ export default function mcq(pi: ExtensionAPI) {
 						// Recommendation reasoning
 						if (q.recommended && q.recommendedReason) {
 							add("");
-							const reasonPrefix = theme.fg("warning", " 💡 ");
+							const reasonPrefix = theme.fg("warning", "💡 ");
 							const reasonText = theme.fg("dim", q.recommendedReason);
-							const wrapped = wrapTextWithAnsi(`${reasonPrefix}${reasonText}`, width - 2);
-							for (const line of wrapped.split("\n")) {
-								add(` ${line}`);
+							const wrapped = wrapTextWithAnsi(`${reasonPrefix}${reasonText}`, width - 4);
+							for (const line of wrapped) {
+								add(`   ${line}`);
 							}
 						}
 
 						add("");
 						const escHint = currentQ > 0 ? "Esc back" : "Esc×2 cancel";
-						add(theme.fg("dim", ` Press 1-${otherNum} • ${escHint}`));
+						const enterHint = q.recommended ? " • Enter accept ★" : "";
+						add(theme.fg("dim", ` Press 1-${otherNum}${enterHint} • ${escHint}`));
 					}
 
 					add(bar);
@@ -444,10 +471,16 @@ export default function mcq(pi: ExtensionAPI) {
 		},
 	});
 
-	// ── /design command ──────────────────────────────────────────────
+	// ── Commands ─────────────────────────────────────────────────────
+
+	const MCQ_COMMON =
+		`Use the mcq tool. Each question should have exactly 3 clear, distinct options (the 4th "Other" is added automatically). ` +
+		`Use short, descriptive IDs like "scope", "approach", "testing". ` +
+		`For each question, recommend the option you think is best based on the project context and explain why briefly. ` +
+		`If my answers raise follow-up questions, call mcq again for a second round.`;
 
 	pi.registerCommand("design", {
-		description: "Start an MCQ intent-design flow — /design <what you want to build>",
+		description: "Gather requirements before building — /design <what you want to build>",
 		handler: async (args, ctx) => {
 			const topic = args?.trim();
 			if (!topic) {
@@ -456,11 +489,41 @@ export default function mcq(pi: ExtensionAPI) {
 			}
 			pi.sendUserMessage(
 				`I want to design: ${topic}\n\n` +
-					`Use the mcq tool to ask me 3-5 focused design questions to understand my intent before writing any code. ` +
-					`Each question should have exactly 3 clear, distinct options (the 4th "Other" is added automatically). ` +
-					`Use short, descriptive IDs like "scope", "approach", "testing". ` +
-					`For each question, recommend the option you think is best based on the project context and explain why briefly. ` +
+					`Ask me 3-5 focused design questions to understand my intent before writing any code. ${MCQ_COMMON} ` +
 					`After I answer, synthesize my choices into a concrete implementation plan, then ask if I'd like to proceed.`,
+			);
+		},
+	});
+
+	pi.registerCommand("wizard", {
+		description: "Interactive config/setup wizard — /wizard <what to configure>",
+		handler: async (args, ctx) => {
+			const topic = args?.trim();
+			if (!topic) {
+				ctx.ui.notify("Usage: /wizard <what to set up or configure>", "warning");
+				return;
+			}
+			pi.sendUserMessage(
+				`I need to set up: ${topic}\n\n` +
+					`Walk me through the configuration choices as a step-by-step wizard. ${MCQ_COMMON} ` +
+					`After I answer, apply the configuration and show me what was set up.`,
+			);
+		},
+	});
+
+	pi.registerCommand("decide", {
+		description: "Record an architectural decision — /decide <decision to make>",
+		handler: async (args, ctx) => {
+			const topic = args?.trim();
+			if (!topic) {
+				ctx.ui.notify("Usage: /decide <architectural decision to make>", "warning");
+				return;
+			}
+			pi.sendUserMessage(
+				`I need to make a decision: ${topic}\n\n` +
+					`Present the key tradeoffs as focused questions with clear options. ${MCQ_COMMON} ` +
+					`After I answer, write a concise ADR (Architecture Decision Record) summarizing the decision, ` +
+					`context, options considered, and rationale for the chosen approach.`,
 			);
 		},
 	});
