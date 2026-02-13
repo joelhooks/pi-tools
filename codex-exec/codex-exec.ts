@@ -40,7 +40,6 @@ function elapsed(task: TaskItem): string {
 function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
   const proc = spawn("codex", args, {
     cwd: task.cwd,
-    shell: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   task.proc = proc;
@@ -147,9 +146,10 @@ export default function (pi: ExtensionAPI) {
       }
       if (params.full_auto !== false) args.push("--full-auto");
       args.push("--skip-git-repo-check");
+      args.push("--cd", cwd);
       if (params.model) args.push("--model", params.model);
       if (params.sandbox) args.push("--sandbox", params.sandbox);
-      args.push(params.prompt);
+      args.push("--", params.prompt);
 
       spawnCodex(task, args, () => {
         const icon = task.status === "done" ? "✅" : "❌";
