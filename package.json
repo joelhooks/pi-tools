@@ -1,0 +1,23 @@
+{
+  "name": "pi-tools",
+  "version": "0.1.0",
+  "description": "Joel's pi extensions \u2014 repo autopsy, ts-check, codex-exec, session reader, skill shortcuts",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent"
+  ],
+  "dependencies": {},
+  "pi": {
+    "extensions": [
+      "./repo-autopsy/index.ts",
+      "./ts-check/ts-check.ts",
+      "./codex-exec/codex-exec.ts",
+      "./session-reader/session-reader.ts",
+      "./skill-shortcut/skill-shortcut.ts",
+      "./ralph-loop/index.ts",
+      "./aliases/aliases.ts"
+    ]
+  }
+}
