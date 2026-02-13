@@ -8,7 +8,7 @@
 
 # pi-tools
 
-> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Type-check with the TypeScript 7 native compiler. Farm work out to Codex in background loops. Read sessions from any agent. Quit when you want to quit.
+> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Type-check with the TypeScript 7 native compiler. Farm work out to Codex in background loops. Lease secrets safely. Quit when you want to quit.
 
 ## Install
 
@@ -29,6 +29,7 @@ pi config  # enable/disable individual extensions
 | `ts-check` ⚡ | TypeScript diagnostics + intelligence via tsgo LSP (TypeScript 7 native) — hover, definitions, references, auto-diagnostics after edits |
 | `codex-exec` 🚀 | Run codex tasks in the background with async result reporting |
 | `ralph-loop` 🔁 | Autonomous coding loops via Codex — PRD-driven stories or free-form prompt loops with progress reporting |
+| `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
 | `session-reader` 📖 | Discover and parse sessions from pi, Claude Code, and Codex |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
@@ -50,6 +51,18 @@ Use ralph_loop in prompt mode with "Run the tests and fix any failures" for 5 it
 ```
 
 Progress appears as messages in your pi session. Use `ralph_jobs` to check status or cancel.
+
+## agent-secrets
+
+Lease credentials safely with TTLs. No env files committed, no plaintext on disk.
+
+```
+Use secrets_lease to get the slack_bot_token with a 30 minute TTL
+```
+
+Tools: `secrets_lease`, `secrets_status`, `secrets_revoke`, `secrets_audit`, `secrets_env`
+
+Requires [agent-secrets](https://github.com/joelhooks/agent-secrets) daemon running.
 
 ## License
 
