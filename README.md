@@ -8,7 +8,7 @@
 
 # pi-tools
 
-> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Type-check with the TypeScript 7 native compiler. Farm work out to Codex in background loops. Lease secrets safely. Quit when you want to quit.
+> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Type-check with the TypeScript 7 native compiler. Farm work out to Codex in background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
 
 ## Install
 
@@ -30,6 +30,7 @@ pi config  # enable/disable individual extensions
 | `codex-exec` 🚀 | Run codex tasks in the background with async result reporting |
 | `ralph-loop` 🔁 | Autonomous coding loops via Codex — PRD-driven stories or free-form prompt loops with progress reporting |
 | `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
+| `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |
 | `session-reader` 📖 | Discover and parse sessions from pi, Claude Code, and Codex |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
@@ -51,6 +52,38 @@ Use ralph_loop in prompt mode with "Run the tests and fix any failures" for 5 it
 ```
 
 Progress appears as messages in your pi session. Use `ralph_jobs` to check status or cancel.
+
+## mcp-bridge
+
+Connect to any remote MCP server that supports OAuth. Tools are auto-discovered and registered into pi, prefixed by server name.
+
+```bash
+# Add a server
+/mcp-add notion https://mcp.notion.com/mcp
+/mcp-add linear https://mcp.linear.app/mcp
+
+# Authenticate (opens browser)
+/mcp-login notion
+
+# Check status
+/mcp-list
+
+# Reconnect after restart (auto on session start)
+/mcp-reconnect
+
+# Remove
+/mcp-remove notion
+```
+
+Commands: `/mcp-add`, `/mcp-remove`, `/mcp-login`, `/mcp-logout`, `/mcp-list`, `/mcp-reconnect`
+
+Tool: `mcp_status`
+
+State stored in `~/.pi/mcp-bridge/` (OAuth client registrations, tokens, PKCE verifiers). Tools from each server are registered as `<name>_<tool>` (e.g., `notion_search`, `notion_update_block`).
+
+On session start, auto-connects to all servers with saved tokens. If tokens are expired, shows a status warning — run `/mcp-login <name>` to re-auth.
+
+Requires `@modelcontextprotocol/sdk` (installed by `setup.sh`).
 
 ## agent-secrets
 
