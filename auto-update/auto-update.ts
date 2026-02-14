@@ -2,7 +2,7 @@
  * auto-update — Automatically updates pi when a new version is available.
  *
  * On session start, checks the npm registry for a newer version.
- * If found, runs the install command in the background and notifies when done.
+ * If found, runs the install command in the background (non-blocking) with a spinner.
  * Detects install method (npm, pnpm, yarn, bun) to use the right command.
  *
  * Set PI_SKIP_AUTO_UPDATE=1 to disable.
@@ -10,10 +10,11 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { execSync } from "node:child_process";
+import { exec, execSync } from "node:child_process";
 
 const PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function detectInstallMethod(): string {
 	const resolvedPath = `${__dirname}\0${process.execPath || ""}`.toLowerCase();
@@ -46,7 +47,6 @@ function getCurrentVersion(): string | undefined {
 		const pkgPath = require.resolve(`${PACKAGE_NAME}/package.json`);
 		return require(pkgPath).version;
 	} catch {
-		// Fallback: try reading from the dist config
 		try {
 			const result = execSync("pi --version 2>/dev/null || echo unknown", { encoding: "utf-8" }).trim();
 			return result === "unknown" ? undefined : result;
@@ -77,7 +77,49 @@ function isNewer(latest: string, current: string): boolean {
 	return false;
 }
 
+function runInstallAsync(cmd: string): Promise<{ ok: boolean; error?: string }> {
+	return new Promise((resolve) => {
+		const child = exec(cmd, { timeout: 120_000 }, (err, _stdout, stderr) => {
+			if (err) {
+				const msg = stderr?.trim()?.split("\n").pop() || err.message || "unknown error";
+				resolve({ ok: false, error: msg });
+			} else {
+				resolve({ ok: true });
+			}
+		});
+		// Ensure we don't keep the process alive if pi exits
+		child.unref();
+	});
+}
+
 export default function (pi: ExtensionAPI) {
+	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+
+	function startSpinner(ctx: { ui: any }, message: string) {
+		let frame = 0;
+		const render = () => {
+			const theme = ctx.ui.theme;
+			const s = theme.fg("warning", SPINNER[frame % SPINNER.length]);
+			ctx.ui.setWidget("auto-update", [s + " " + theme.fg("dim", message)]);
+			frame++;
+		};
+		render();
+		spinnerTimer = setInterval(render, 80);
+	}
+
+	function stopSpinner() {
+		if (spinnerTimer) {
+			clearInterval(spinnerTimer);
+			spinnerTimer = undefined;
+		}
+	}
+
+	function showResult(ctx: { ui: any }, color: string, message: string, ttl: number) {
+		const theme = ctx.ui.theme;
+		ctx.ui.setWidget("auto-update", [theme.fg(color, "●") + " " + theme.fg("dim", message)]);
+		setTimeout(() => ctx.ui.setWidget("auto-update", undefined), ttl);
+	}
+
 	async function checkAndUpdate(ctx: { ui: any }, silent = false): Promise<void> {
 		if (process.env.PI_SKIP_AUTO_UPDATE) {
 			if (!silent) ctx.ui.notify("Auto-update is disabled (PI_SKIP_AUTO_UPDATE)", "info");
@@ -90,39 +132,40 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const latest = await fetchLatestVersion();
-		if (!latest) {
-			if (!silent) ctx.ui.notify("Could not check for updates", "warning");
-			return;
-		}
+		if (!silent) startSpinner(ctx, `checking for updates (${current})...`);
 
-		if (!isNewer(latest, current)) {
+		const latest = await fetchLatestVersion();
+
+		if (!latest) {
+			stopSpinner();
 			if (!silent) {
-				const theme = ctx.ui.theme;
-				ctx.ui.setWidget("auto-update", [theme.fg("success", "●") + " " + theme.fg("dim", `pi ${current} is up to date`)]);
-				setTimeout(() => ctx.ui.setWidget("auto-update", undefined), 5000);
+				showResult(ctx, "warning", "could not check for updates", 5000);
 			}
 			return;
 		}
 
-		const theme = ctx.ui.theme;
-		const cmd = getInstallCommand();
+		if (!isNewer(latest, current)) {
+			stopSpinner();
+			if (!silent) {
+				showResult(ctx, "success", `pi ${current} is up to date`, 5000);
+			}
+			return;
+		}
 
-		ctx.ui.setWidget("auto-update", [theme.fg("warning", "●") + " " + theme.fg("dim", `updating pi ${current} → ${latest}...`)]);
+		// New version available — install in background
+		startSpinner(ctx, `updating pi ${current} → ${latest}...`);
 
-		try {
-			execSync(cmd, { encoding: "utf-8", timeout: 120_000, stdio: "pipe" });
-			ctx.ui.setWidget("auto-update", [theme.fg("success", "●") + " " + theme.fg("dim", `pi updated to ${latest} — restart to apply`)]);
-			setTimeout(() => ctx.ui.setWidget("auto-update", undefined), 15000);
-		} catch (err: any) {
-			const msg = err.stderr?.trim()?.split("\n").pop() || err.message || "unknown error";
-			ctx.ui.setWidget("auto-update", [theme.fg("error", "●") + " " + theme.fg("dim", `update failed: ${msg}`)]);
-			setTimeout(() => ctx.ui.setWidget("auto-update", undefined), 10000);
+		const result = await runInstallAsync(getInstallCommand());
+		stopSpinner();
+
+		if (result.ok) {
+			showResult(ctx, "success", `pi updated to ${latest} — restart to apply`, 15000);
+		} else {
+			showResult(ctx, "error", `update failed: ${result.error}`, 10000);
 		}
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		// Small delay so it doesn't race with startup UI
 		setTimeout(() => checkAndUpdate(ctx, true), 3000);
 	});
 
