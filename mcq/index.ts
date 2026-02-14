@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -84,8 +84,11 @@ export default function mcq(pi: ExtensionAPI) {
 				"This is faster than asking open-ended questions — the user just presses 1-4. " +
 				"Good triggers: vague feature requests, architectural choices with tradeoffs, " +
 				"config with many options, or any time you'd otherwise guess and risk going the wrong direction. " +
-				"Keep it to 2-5 questions. Recommend an option when you have a informed opinion. " +
-				"Don't use mcq for simple yes/no — just ask directly.",
+				"Recommend an option when you have a informed opinion. " +
+				"Don't use mcq for simple yes/no — just ask directly.\n\n" +
+				"**Adaptive flow**: Call mcq with 1-2 questions at a time, read the answers, then call mcq again " +
+				"with follow-up questions that adapt to what the user chose. This feels like a conversation, not a form. " +
+				"Only batch questions together when they're truly independent of each other.",
 		};
 	});
 
@@ -98,7 +101,10 @@ export default function mcq(pi: ExtensionAPI) {
 			"(including @file and $symbol references). " +
 			"User presses 1–4 to answer instantly. " +
 			"Use for requirements, design decisions, config choices, or any structured clarification. " +
-			"You can recommend an option with reasoning to guide the user's decision.",
+			"You can recommend an option with reasoning to guide the user's decision. " +
+			"ADAPTIVE FLOW: Prefer calling mcq with 1-2 questions at a time, then reading the answers " +
+			"to tailor your next mcq call. This makes the conversation feel responsive — later questions " +
+			"adapt to earlier answers instead of being predetermined. Only batch questions when they're truly independent.",
 		parameters: MCQParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -132,6 +138,7 @@ export default function mcq(pi: ExtensionAPI) {
 				let flashIndex: number | null = null;
 				let lastEscTime = 0;
 				let cachedLines: string[] | undefined;
+				let highlightIndex = 0; // 0-based index into options + "Other"
 				const answers = new Map<number, MCQAnswer>();
 
 				// ── Editor for "Other" ──
@@ -165,6 +172,8 @@ export default function mcq(pi: ExtensionAPI) {
 				function advance() {
 					if (currentQ < questions.length - 1) {
 						currentQ++;
+						const nextQ = questions[currentQ];
+						highlightIndex = nextQ.recommended ? nextQ.recommended - 1 : 0;
 					} else {
 						showSummary = true;
 					}
@@ -236,6 +245,7 @@ export default function mcq(pi: ExtensionAPI) {
 						if (matchesKey(data, Key.left) || matchesKey(data, Key.up)) {
 							showSummary = false;
 							currentQ = questions.length - 1;
+							highlightIndex = 0;
 							refresh();
 							return;
 						}
@@ -243,6 +253,7 @@ export default function mcq(pi: ExtensionAPI) {
 						if (n >= 1 && n <= questions.length) {
 							showSummary = false;
 							currentQ = n - 1;
+							highlightIndex = 0;
 							refresh();
 							return;
 						}
@@ -261,18 +272,32 @@ export default function mcq(pi: ExtensionAPI) {
 
 						if (currentQ > 0) {
 							currentQ--;
+							highlightIndex = 0;
 							refresh();
 						}
 						// On Q1, single Esc does nothing (need double to cancel)
 						return;
 					}
 
-					// Enter accepts recommended option
-					if (matchesKey(data, Key.enter)) {
+					// Arrow navigation
+					if (matchesKey(data, Key.up) || matchesKey(data, Key.left)) {
 						const q = questions[currentQ];
-						if (q.recommended && q.recommended >= 1 && q.recommended <= q.options.length) {
-							selectOption(q.recommended);
-						}
+						const maxIdx = q.options.length; // 0..options.length (includes "Other")
+						highlightIndex = (highlightIndex - 1 + maxIdx + 1) % (maxIdx + 1);
+						refresh();
+						return;
+					}
+					if (matchesKey(data, Key.down) || matchesKey(data, Key.right)) {
+						const q = questions[currentQ];
+						const maxIdx = q.options.length;
+						highlightIndex = (highlightIndex + 1) % (maxIdx + 1);
+						refresh();
+						return;
+					}
+
+					// Enter confirms highlighted option
+					if (matchesKey(data, Key.enter)) {
+						selectOption(highlightIndex + 1);
 						return;
 					}
 
@@ -282,6 +307,7 @@ export default function mcq(pi: ExtensionAPI) {
 					const q = questions[currentQ];
 					const maxOpt = q.options.length + 1;
 					if (n >= 1 && n <= maxOpt) {
+						highlightIndex = n - 1;
 						selectOption(n);
 					}
 				}
@@ -292,6 +318,21 @@ export default function mcq(pi: ExtensionAPI) {
 
 					const lines: string[] = [];
 					const add = (s: string) => lines.push(truncateToWidth(s, width));
+					/** Wrap text with a styled prefix; continuation lines get indented to align. */
+					const addWrapped = (prefix: string, text: string, suffix?: string) => {
+						const prefixW = visibleWidth(prefix);
+						const full = prefix + text + (suffix || "");
+						if (visibleWidth(full) <= width) {
+							lines.push(full);
+							return;
+						}
+						// Wrap the text portion, then prepend prefix/indent
+						const indent = " ".repeat(prefixW);
+						const wrapped = wrapTextWithAnsi(text + (suffix || ""), width - prefixW);
+						for (let j = 0; j < wrapped.length; j++) {
+							lines.push((j === 0 ? prefix : indent) + wrapped[j]);
+						}
+					};
 					const barLen = Math.min(width, 60);
 					const bar = theme.fg("accent", "━".repeat(barLen));
 
@@ -308,7 +349,7 @@ export default function mcq(pi: ExtensionAPI) {
 								const val = a.isCustom
 									? theme.fg("muted", "(wrote) ") + a.answer
 									: theme.fg("dim", `${a.selected}. `) + a.answer;
-								add(` ${theme.fg("success", "✓")} ${theme.fg("accent", q.id)}: ${val}`);
+								addWrapped(` ${theme.fg("success", "✓")} ${theme.fg("accent", q.id)}: `, val);
 							} else {
 								add(` ${theme.fg("warning", "○")} ${theme.fg("accent", q.id)}: ${theme.fg("dim", "(unanswered)")}`);
 							}
@@ -331,15 +372,15 @@ export default function mcq(pi: ExtensionAPI) {
 						` ${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", step)}  ${progressBar(currentQ + 1, questions.length, barWidth, theme.fg.bind(theme))}`,
 					);
 					add("");
-					add(theme.fg("text", ` ${q.question}`));
+					addWrapped(" ", theme.fg("text", q.question));
 					if (q.context) {
-						add(theme.fg("dim", `   ${q.context}`));
+						addWrapped("   ", theme.fg("dim", q.context));
 					}
 					add("");
 
 					if (inputMode) {
 						for (let i = 0; i < q.options.length; i++) {
-							add(theme.fg("dim", `   ${i + 1}  ${q.options[i]}`));
+							addWrapped(theme.fg("dim", `   ${i + 1}  `), theme.fg("dim", q.options[i]));
 						}
 						add(theme.fg("accent", `   ${q.options.length + 1}  Other ✎`));
 						add("");
@@ -357,6 +398,7 @@ export default function mcq(pi: ExtensionAPI) {
 							const existing = answers.get(currentQ);
 							const isPrevSelected = existing && !existing.isCustom && existing.selected === num;
 							const isFlash = flashIndex === num;
+							const isHighlighted = highlightIndex === i;
 							const rec = isRec(num);
 
 							let prefix: string;
@@ -367,28 +409,37 @@ export default function mcq(pi: ExtensionAPI) {
 							} else if (isPrevSelected) {
 								prefix = theme.fg("success", ` ✓ ${num} `);
 								optColor = "text";
+							} else if (isHighlighted) {
+								prefix = theme.fg("accent", theme.bold(` ▸ ${num} `));
+								optColor = "accent";
 							} else if (rec) {
 								prefix = theme.fg("warning", ` ★ ${num} `);
 								optColor = "text";
 							} else {
-								prefix = theme.fg("accent", theme.bold(`   ${num} `));
+								prefix = theme.fg("dim", `   ${num} `);
 								optColor = "text";
 							}
 							const recTag = rec && !isFlash && !isPrevSelected ? theme.fg("warning", " ← recommended") : "";
-							add(`${prefix} ${theme.fg(optColor, q.options[i])}${recTag}`);
+							addWrapped(`${prefix} `, theme.fg(optColor, q.options[i]), recTag);
 						}
 
 						// "Other" option
 						const otherNum = q.options.length + 1;
 						const existing = answers.get(currentQ);
 						const isOtherPrev = existing?.isCustom;
+						const isOtherHighlighted = highlightIndex === q.options.length;
 						if (isOtherPrev) {
+							addWrapped(
+								`${theme.fg("success", ` ✓ ${otherNum} `)} `,
+								`${theme.fg("text", "Other")} ${theme.fg("dim", `→ ${existing!.answer}`)}`,
+							);
+						} else if (isOtherHighlighted) {
 							add(
-								`${theme.fg("success", ` ✓ ${otherNum} `)} ${theme.fg("text", "Other")} ${theme.fg("dim", `→ ${existing!.answer}`)}`,
+								`${theme.fg("accent", theme.bold(` ▸ ${otherNum} `))} ${theme.fg("accent", "Other (type your response)")}`,
 							);
 						} else {
 							add(
-								`${theme.fg("accent", theme.bold(`   ${otherNum} `))} ${theme.fg("text", "Other (type your response)")}`,
+								`${theme.fg("dim", `   ${otherNum} `)} ${theme.fg("text", "Other (type your response)")}`,
 							);
 						}
 
@@ -405,8 +456,7 @@ export default function mcq(pi: ExtensionAPI) {
 
 						add("");
 						const escHint = currentQ > 0 ? "Esc back" : "Esc×2 cancel";
-						const enterHint = q.recommended ? " • Enter accept ★" : "";
-						add(theme.fg("dim", ` Press 1-${otherNum}${enterHint} • ${escHint}`));
+						add(theme.fg("dim", ` ↑↓ navigate • Enter select • 1-${otherNum} quick pick • ${escHint}`));
 					}
 
 					add(bar);
@@ -474,10 +524,11 @@ export default function mcq(pi: ExtensionAPI) {
 	// ── Commands ─────────────────────────────────────────────────────
 
 	const MCQ_COMMON =
-		`Use the mcq tool. Each question should have exactly 3 clear, distinct options (the 4th "Other" is added automatically). ` +
+		`Use the mcq tool adaptively: ask 1-2 questions at a time, read my answers, then tailor your next questions based on what I chose. ` +
+		`Each question should have exactly 3 clear, distinct options (the 4th "Other" is added automatically). ` +
 		`Use short, descriptive IDs like "scope", "approach", "testing". ` +
-		`For each question, recommend the option you think is best based on the project context and explain why briefly. ` +
-		`If my answers raise follow-up questions, call mcq again for a second round.`;
+		`Recommend the option you think is best based on the project context and explain why briefly. ` +
+		`Only batch questions together when they don't depend on each other.`;
 
 	pi.registerCommand("design", {
 		description: "Gather requirements before building — /design <what you want to build>",

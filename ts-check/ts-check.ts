@@ -268,13 +268,14 @@ export default function (pi: ExtensionAPI) {
     } catch { }
 
     const report = formatDiagnostics(server, root);
+    const theme = ctx.ui.theme;
     if (report) {
       const errorCount = (report.match(/error/g) || []).length;
-      ctx.ui.setStatus("ts-check", `❌ tsgo: ${errorCount} issue${errorCount > 1 ? "s" : ""}`);
+      ctx.ui.setWidget("ts-check", [theme.fg("error", "●") + " " + theme.fg("dim", `tsgo: ${errorCount} issue${errorCount > 1 ? "s" : ""}`)]);
       ctx.ui.notify(`TypeScript issues:\n${report.split("\n").slice(0, 8).join("\n")}`, "warning");
     } else {
-      ctx.ui.setStatus("ts-check", "✅ tsgo: clean");
-      setTimeout(() => ctx.ui.setStatus("ts-check", ""), 5000);
+      ctx.ui.setWidget("ts-check", [theme.fg("success", "●") + " " + theme.fg("dim", "tsgo: clean")]);
+      setTimeout(() => ctx.ui.setWidget("ts-check", undefined), 5000);
     }
   });
 
@@ -377,7 +378,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       enabled = !enabled;
       ctx.ui.notify(`tsgo checking: ${enabled ? "enabled" : "disabled"}`, "info");
-      if (!enabled) ctx.ui.setStatus("ts-check", "");
+      if (!enabled) ctx.ui.setWidget("ts-check", undefined);
     },
   });
 
