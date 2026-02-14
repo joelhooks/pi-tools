@@ -1,16 +1,14 @@
 {
   "name": "pi-tools",
   "version": "0.2.0",
-  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, skill shortcuts, MCQ design flow, MCP bridge",
+  "description": "Joel's pi extensions \u2014 repo autopsy, ts-check, codex-exec, session reader, skill shortcuts, MCQ design flow, MCP bridge",
   "license": "MIT",
   "keywords": [
     "pi-package",
     "pi",
     "pi-coding-agent"
   ],
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0"
-  },
+  "dependencies": {},
   "pi": {
     "extensions": [
       "./repo-autopsy/index.ts",

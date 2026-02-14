@@ -1,0 +1,7 @@
+{
+  "name": "pi-tools-mcp-bridge",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0"
+  }
+}
