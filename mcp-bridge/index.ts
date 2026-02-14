@@ -22,6 +22,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
@@ -236,6 +238,7 @@ class McpOAuthProvider implements OAuthClientProvider {
 
 export default function (pi: ExtensionAPI) {
   const states = new Map<string, ServerState>();
+  let _footerTui: { requestRender: () => void } | undefined;
 
   function text(s: string) {
     return { content: [{ type: "text" as const, text: s }], details: {} };
@@ -243,6 +246,21 @@ export default function (pi: ExtensionAPI) {
 
   function truncate(s: string, max = 50000): string {
     return s.length > max ? s.slice(0, max) + "\n\n... (truncated)" : s;
+  }
+
+  /** Trigger a footer re-render (e.g. when mcp connection state changes). */
+  function refreshFooter() {
+    _footerTui?.requestRender();
+  }
+
+  /** Build the mcp label for the footer, e.g. "mcp 1/2". Empty string if no servers. */
+  function getMcpLabel(): string {
+    const servers = loadServers();
+    if (servers.length === 0) return "";
+    const connected = servers.filter(
+      (s) => states.get(s.name)?.connected
+    ).length;
+    return `mcp ${connected}/${servers.length}`;
   }
 
   /**
@@ -350,7 +368,7 @@ export default function (pi: ExtensionAPI) {
         tools: toolNames,
       });
 
-      ctx?.ui.setStatus(`mcp-${config.name}`, `🔗 ${config.name}`);
+      refreshFooter();
       return true;
     } catch (err: any) {
       states.set(config.name, {
@@ -364,10 +382,12 @@ export default function (pi: ExtensionAPI) {
         err.constructor?.name === "UnauthorizedError" ||
         err.message?.includes("Unauthorized")
       ) {
+        refreshFooter();
         return false;
       }
 
       ctx?.ui.notify(`MCP ${config.name}: ${err.message}`, "error");
+      refreshFooter();
       return false;
     }
   }
@@ -460,9 +480,9 @@ export default function (pi: ExtensionAPI) {
             tools: toolNames,
           });
 
-          ctx.ui.setStatus(`mcp-${config.name}`, `🔗 ${config.name}`);
+          refreshFooter();
           ctx.ui.notify(
-            `✅ ${config.name} connected — ${tools.length} tools registered`,
+            `${config.name} connected — ${tools.length} tools`,
             "success"
           );
           return true;
@@ -506,9 +526,9 @@ export default function (pi: ExtensionAPI) {
         tools: toolNames,
       });
 
-      ctx.ui.setStatus(`mcp-${config.name}`, `🔗 ${config.name}`);
+      refreshFooter();
       ctx.ui.notify(
-        `✅ ${config.name} connected — ${tools.length} tools registered`,
+        `${config.name} connected — ${tools.length} tools`,
         "success"
       );
       return true;
@@ -521,25 +541,172 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // ── Custom footer with mcp status ───────────────────────────────
+  function installFooter(ctx: ExtensionContext) {
+    ctx.ui.setFooter((tui, theme, footerData) => {
+      _footerTui = tui;
+      const unsub = footerData.onBranchChange(() => tui.requestRender());
+
+      return {
+        dispose: unsub,
+        invalidate() {},
+        render(width: number): string[] {
+          // ── Line 1: [mcp N/M]  ~/path (branch) [• session] ──
+          let pwd = process.cwd();
+          const home = process.env.HOME || process.env.USERPROFILE;
+          if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
+          const branch = footerData.getGitBranch();
+          if (branch) pwd = `${pwd} (${branch})`;
+          const sessionName = ctx.sessionManager.getSessionName();
+          if (sessionName) pwd = `${pwd} • ${sessionName}`;
+
+          const mcpLabel = getMcpLabel();
+          let line1: string;
+          if (mcpLabel) {
+            const pwdWidth = visibleWidth(pwd);
+            const labelWidth = visibleWidth(mcpLabel);
+            const gap = width - pwdWidth - labelWidth;
+            if (gap >= 2) {
+              line1 = pwd + " ".repeat(gap) + mcpLabel;
+            } else {
+              // Not enough room — truncate pwd to make space
+              const maxPwd = width - labelWidth - 2;
+              line1 = maxPwd > 3
+                ? truncateToWidth(pwd, maxPwd) + "  " + mcpLabel
+                : truncateToWidth(pwd, width);
+            }
+          } else {
+            line1 = truncateToWidth(pwd, width);
+          }
+
+          // ── Line 2: token stats + context + model ──
+          let totalInput = 0, totalOutput = 0;
+          let totalCacheRead = 0, totalCacheWrite = 0, totalCost = 0;
+          let thinkingLevel = "off";
+          for (const entry of ctx.sessionManager.getEntries()) {
+            if (entry.type === "message" && (entry as any).message?.role === "assistant") {
+              const m = (entry as any).message as AssistantMessage;
+              totalInput += m.usage.input;
+              totalOutput += m.usage.output;
+              totalCacheRead += m.usage.cacheRead;
+              totalCacheWrite += m.usage.cacheWrite;
+              totalCost += m.usage.cost.total;
+            } else if ((entry as any).type === "thinking_level_change") {
+              thinkingLevel = (entry as any).thinkingLevel;
+            }
+          }
+
+          const fmt = (n: number) => {
+            if (n < 1000) return n.toString();
+            if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+            if (n < 1000000) return `${Math.round(n / 1000)}k`;
+            if (n < 10000000) return `${(n / 1000000).toFixed(1)}M`;
+            return `${Math.round(n / 1000000)}M`;
+          };
+
+          const statsParts: string[] = [];
+          if (totalInput) statsParts.push(`↑${fmt(totalInput)}`);
+          if (totalOutput) statsParts.push(`↓${fmt(totalOutput)}`);
+          if (totalCacheRead) statsParts.push(`R${fmt(totalCacheRead)}`);
+          if (totalCacheWrite) statsParts.push(`W${fmt(totalCacheWrite)}`);
+
+          const usingSubscription = ctx.model
+            ? ctx.modelRegistry.isUsingOAuth(ctx.model)
+            : false;
+          if (totalCost || usingSubscription) {
+            const costStr = `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
+            statsParts.push(costStr);
+          }
+
+          // Context usage
+          const contextUsage = ctx.getContextUsage();
+          const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
+          const contextPercentValue = contextUsage?.percent ?? 0;
+          const contextPercentDisplay = contextUsage?.percent !== null
+            ? `${contextPercentValue.toFixed(1)}%/${fmt(contextWindow)} (auto)`
+            : `?/${fmt(contextWindow)} (auto)`;
+          let contextPercentStr: string;
+          if (contextPercentValue > 90) {
+            contextPercentStr = theme.fg("error", contextPercentDisplay);
+          } else if (contextPercentValue > 70) {
+            contextPercentStr = theme.fg("warning", contextPercentDisplay);
+          } else {
+            contextPercentStr = contextPercentDisplay;
+          }
+          statsParts.push(contextPercentStr);
+
+          let statsLeft = statsParts.join(" ");
+          let statsLeftWidth = visibleWidth(statsLeft);
+          if (statsLeftWidth > width) {
+            statsLeft = truncateToWidth(statsLeft, width);
+            statsLeftWidth = visibleWidth(statsLeft);
+          }
+
+          // Right side: model + thinking level
+          const modelName = ctx.model?.id || "no-model";
+          let rightSideBase = modelName;
+          if (ctx.model?.reasoning) {
+            rightSideBase = thinkingLevel === "off"
+              ? `${modelName} • thinking off`
+              : `${modelName} • ${thinkingLevel}`;
+          }
+
+          // Add provider prefix if multiple providers
+          let rightSide = rightSideBase;
+          if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
+            const withProvider = `(${ctx.model.provider}) ${rightSideBase}`;
+            if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
+              rightSide = withProvider;
+            }
+          }
+
+          const rightSideWidth = visibleWidth(rightSide);
+          const minPadding = 2;
+          let statsLine: string;
+          if (statsLeftWidth + minPadding + rightSideWidth <= width) {
+            const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
+            statsLine = statsLeft + padding + rightSide;
+          } else {
+            const avail = width - statsLeftWidth - minPadding;
+            if (avail > 3) {
+              const truncRight = truncateToWidth(rightSide, avail);
+              const padding = " ".repeat(width - statsLeftWidth - visibleWidth(truncRight));
+              statsLine = statsLeft + padding + truncRight;
+            } else {
+              statsLine = statsLeft;
+            }
+          }
+
+          const dimStatsLeft = theme.fg("dim", statsLeft);
+          const remainder = statsLine.slice(statsLeft.length);
+          const dimRemainder = theme.fg("dim", remainder);
+
+          return [theme.fg("dim", line1), dimStatsLeft + dimRemainder];
+        },
+      };
+    });
+  }
+
   // ── Auto-connect on session start ─────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
+    installFooter(ctx);
+
     const servers = loadServers();
     if (servers.length === 0) return;
 
-    const results: string[] = [];
+    const failed: string[] = [];
     for (const config of servers) {
       const ok = await connectServer(config, ctx);
-      if (ok) {
-        const state = states.get(config.name);
-        results.push(`✅ ${config.name} (${state?.tools.length ?? 0} tools)`);
-      } else {
-        results.push(`⚠️ ${config.name} (needs /mcp-login ${config.name})`);
-        ctx.ui.setStatus(`mcp-${config.name}`, `⚠️ ${config.name}`);
-      }
+      if (!ok) failed.push(config.name);
     }
 
-    if (results.length > 0) {
-      ctx.ui.notify(`MCP bridge: ${results.join(", ")}`, "info");
+    refreshFooter();
+
+    if (failed.length > 0) {
+      ctx.ui.notify(
+        `mcp: ${failed.join(", ")} need /mcp-login`,
+        "info"
+      );
     }
   });
 
@@ -598,8 +765,8 @@ export default function (pi: ExtensionAPI) {
       removeFile(clientFile(name));
       removeFile(verifierFile(name));
 
-      ctx.ui.setStatus(`mcp-${name}`, undefined);
       states.delete(name);
+      refreshFooter();
 
       ctx.ui.notify(`Removed ${name} and cleared all credentials.`, "info");
     },
@@ -640,7 +807,7 @@ export default function (pi: ExtensionAPI) {
       removeFile(tokensFile(name));
       removeFile(verifierFile(name));
 
-      ctx.ui.setStatus(`mcp-${name}`, undefined);
+      refreshFooter();
       ctx.ui.notify(`${name}: tokens cleared, disconnected.`, "info");
     },
   });
@@ -658,24 +825,20 @@ export default function (pi: ExtensionAPI) {
         }
         await disconnectServer(name);
         const ok = await connectServer(config, ctx);
+        refreshFooter();
         ctx.ui.notify(
           ok
-            ? `✅ ${name} reconnected`
-            : `⚠️ ${name} failed — try /mcp-login ${name}`,
+            ? `${name} reconnected`
+            : `${name} failed — try /mcp-login ${name}`,
           ok ? "info" : "error"
         );
       } else {
         const servers = loadServers();
         for (const config of servers) {
           await disconnectServer(config.name);
-          const ok = await connectServer(config, ctx);
-          ctx.ui.notify(
-            ok
-              ? `✅ ${config.name} reconnected`
-              : `⚠️ ${config.name} failed — try /mcp-login ${config.name}`,
-            ok ? "info" : "error"
-          );
+          await connectServer(config, ctx);
         }
+        refreshFooter();
       }
     },
   });
@@ -692,19 +855,15 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const lines = ["📡 MCP Servers\n"];
+      const lines = ["MCP Servers\n"];
       for (const config of servers) {
         const state = states.get(config.name);
-        const status = state?.connected ? "✅ connected" : "❌ disconnected";
+        const status = state?.connected ? "connected" : "disconnected";
         const toolCount = state?.tools.length ?? 0;
-        lines.push(`  ${config.name}`);
-        lines.push(`    URL:    ${config.url}`);
-        lines.push(`    Status: ${status}`);
-        lines.push(`    Tools:  ${toolCount}`);
+        lines.push(`  ${config.name} — ${status}, ${toolCount} tools`);
+        lines.push(`    ${config.url}`);
         if (state?.tools.length) {
-          lines.push(
-            `    ${state.tools.map((t) => `• ${t}`).join("\n    ")}`
-          );
+          for (const t of state.tools) lines.push(`    - ${t}`);
         }
         lines.push("");
       }
