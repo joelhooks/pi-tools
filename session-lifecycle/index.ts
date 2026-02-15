@@ -196,7 +196,10 @@ export default function (pi: ExtensionAPI) {
                 pi.setSessionName(title);
               }
             }
-          } catch { /* non-critical — fallback title already set */ }
+          } catch (e) {
+            // Log to daily file for debugging
+            appendToDaily(`\n### ⚠️ Title gen failed (${timeStamp()})\n${e instanceof Error ? e.message : String(e)}\n`);
+          }
         })();
       }
     }
