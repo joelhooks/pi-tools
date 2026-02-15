@@ -103,6 +103,19 @@ function activeProjects(): string[] {
 
 // ── Static system prompt awareness (same every turn → cacheable) ──
 
+function currentTimestamp(): string {
+  return new Date().toLocaleString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
 const LIFECYCLE_AWARENESS = `
 ## Session Lifecycle (auto-managed)
 
@@ -148,8 +161,11 @@ export default function (pi: ExtensionAPI) {
           : "";
     }
 
-    // System prompt awareness goes on every turn (static, at the end → cacheable prefix)
-    const systemPrompt = event.systemPrompt + "\n\n" + LIFECYCLE_AWARENESS;
+    // System prompt awareness goes on every turn (re-applied, not accumulated)
+    // Includes dynamic timestamp (replaces system-context.ts custom_message which was persisted per-turn)
+    const systemPrompt = event.systemPrompt + "\n\n" + LIFECYCLE_AWARENESS +
+      `\n\n[Current time: ${currentTimestamp()}]` +
+      `\n[Remember: log infrastructure changes only (installs, service restarts, config edits, tool setup) with \`slog write --action ACTION --tool TOOL --detail "what" --reason "why"\` — do NOT slog routine file edits, code changes, or content writes]`;
 
     // Session briefing only on first turn
     if (hasBriefed) {
@@ -202,8 +218,9 @@ export default function (pi: ExtensionAPI) {
     const msgCount = preparation.messagesToSummarize?.length || 0;
     const tokensBefore = preparation.tokensBefore || 0;
     const fileOps = preparation.fileOps;
-    const readFiles = fileOps?.readFiles || [];
-    const modifiedFiles = fileOps?.modifiedFiles || [];
+    // fileOps has .read (Set) and .edited (Set), not .readFiles/.modifiedFiles
+    const readFiles = fileOps?.read ? [...fileOps.read] : [];
+    const modifiedFiles = fileOps?.edited ? [...fileOps.edited] : [];
 
     const lines = [
       `\n### ⚡ Compaction (${timeStamp()})`,
