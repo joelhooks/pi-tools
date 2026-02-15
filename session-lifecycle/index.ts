@@ -150,15 +150,28 @@ export default function (pi: ExtensionAPI) {
 
   // ── before_agent_start: briefing + awareness ────────────────
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     userMessageCount++;
 
-    // Capture first user message for auto-naming
+    // Capture first user message for auto-naming and terminal title
     if (!firstUserMessage && event.prompt) {
       firstUserMessage =
         typeof event.prompt === "string"
           ? event.prompt.slice(0, 200)
           : "";
+
+      // Set terminal title from first message so tabs are identifiable immediately
+      if (ctx?.hasUI && firstUserMessage) {
+        const titleText = firstUserMessage
+          .replace(/\n.*/s, "")           // first line only
+          .replace(/[/\\@$]/g, " ")       // strip path/reference chars
+          .replace(/\s+/g, " ")           // collapse whitespace
+          .trim()
+          .slice(0, 50);
+        if (titleText) {
+          ctx.ui.setTitle(`π ${titleText}`);
+        }
+      }
     }
 
     // System prompt awareness goes on every turn (re-applied, not accumulated)
