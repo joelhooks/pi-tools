@@ -19,11 +19,11 @@
 // Writes:
 //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
 
+import { exec } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { completeSimple } from "@mariozechner/pi-ai";
 
 // ── Paths ───────────────────────────────────────────────────────────
 
@@ -161,45 +161,21 @@ export default function (pi: ExtensionAPI) {
           ? event.prompt.slice(0, 200)
           : "";
 
-      // Set terminal tab title via haiku LLM (no fallback — haiku or nothing)
-      if (firstUserMessage && ctx?.modelRegistry) {
-        const setTermTitle = (t: string) => process.stdout.write(`\x1b]2;${t}\x07`);
-        (async () => {
-          try {
-            const haiku = ctx.modelRegistry.find("anthropic", "claude-haiku-4-5");
-            if (!haiku) {
-              appendToDaily(`\n### ⚠️ Title: model not found (${timeStamp()})\n`);
-              return;
-            }
-            const apiKey = await ctx.modelRegistry.getApiKey(haiku);
-            if (!apiKey) {
-              appendToDaily(`\n### ⚠️ Title: no API key for anthropic (${timeStamp()})\n`);
-              return;
-            }
-            const resp = await completeSimple(haiku,
-              {
-                systemPrompt: "Generate a 3-6 word terminal tab title for this coding session. Return ONLY the title, no quotes, no punctuation, no explanation. Be specific about what's being worked on.",
-                messages: [{
-                  role: "user" as const,
-                  content: [{ type: "text" as const, text: firstUserMessage.slice(0, 500) }],
-                  timestamp: Date.now(),
-                }],
-              },
-              { maxTokens: 20, apiKey },
-            );
-            const title = resp.content
-              .filter((c): c is { type: "text"; text: string } => c.type === "text")
-              .map((c) => c.text).join("").trim().slice(0, 60);
-            if (title && resp.stopReason !== "error") {
-              setTermTitle(`π ${title}`);
-              if (!pi.getSessionName()) pi.setSessionName(title);
-            } else {
-              appendToDaily(`\n### ⚠️ Title: empty or error (${timeStamp()}) stop=${resp.stopReason}\n`);
-            }
-          } catch (e) {
-            appendToDaily(`\n### ⚠️ Title gen failed (${timeStamp()})\n${e instanceof Error ? e.stack : String(e)}\n`);
+      // Set terminal tab title via pi --print calling haiku
+      if (firstUserMessage) {
+        const escaped = firstUserMessage.slice(0, 300).replace(/'/g, "'\\''");
+        const cmd = `pi --provider anthropic --model claude-haiku-4-5 --no-tools --no-session --print --mode text --system-prompt 'Generate a 3-6 word terminal tab title for this coding session. Return ONLY the title, no quotes, no punctuation, no explanation.' '${escaped}'`;
+        exec(cmd, { timeout: 10000 }, (err, stdout) => {
+          if (err) {
+            appendToDaily(`\n### ⚠️ Title gen failed (${timeStamp()})\n${err.message}\n`);
+            return;
           }
-        })();
+          const title = stdout.trim().slice(0, 60);
+          if (title) {
+            process.stdout.write(`\x1b]2;π ${title}\x07`);
+            if (!pi.getSessionName()) pi.setSessionName(title);
+          }
+        });
       }
     }
 
