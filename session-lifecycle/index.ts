@@ -171,7 +171,7 @@ export default function (pi: ExtensionAPI) {
             return;
           }
           const title = stdout.trim().slice(0, 60);
-          if (title && !pi.getSessionName()) {
+          if (title) {
             pi.setSessionName(title);
           }
         });
@@ -266,22 +266,11 @@ export default function (pi: ExtensionAPI) {
   // ── session_shutdown: auto-name + handoff ───────────────────
 
   pi.on("session_shutdown", async () => {
-    // Auto-name if unnamed
-    const existingName = pi.getSessionName();
-    if (!existingName && firstUserMessage) {
+    // Auto-name at shutdown only if haiku didn't set one
+    if (!pi.getSessionName() && firstUserMessage) {
       const autoName = firstUserMessage
-        .replace(/^(continue|review|check|kick off|pick up|read|look at)[:\s]*/i, "")
-        .replace(/~\/(Vault|Code)\/[^\s]+/g, (m) => {
-          const parts = m.split("/");
-          return parts.slice(-2).join("/");
-        })
-        .replace(/\n.*/s, "") // first line only
-        .slice(0, 60)
-        .trim();
-
-      if (autoName) {
-        pi.setSessionName(autoName);
-      }
+        .replace(/\n.*/s, "").slice(0, 60).trim();
+      if (autoName) pi.setSessionName(autoName);
     }
 
     // Write handoff to daily log
