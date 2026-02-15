@@ -161,19 +161,18 @@ export default function (pi: ExtensionAPI) {
           ? event.prompt.slice(0, 200)
           : "";
 
-      // Set terminal tab title via pi --print calling haiku
+      // Generate session name with haiku via pi --print (fire-and-forget, no stdout writes)
       if (firstUserMessage) {
         const escaped = firstUserMessage.slice(0, 300).replace(/'/g, "'\\''");
-        const cmd = `pi --provider anthropic --model claude-haiku-4-5 --no-tools --no-session --print --mode text --system-prompt 'Generate a 3-6 word terminal tab title for this coding session. Return ONLY the title, no quotes, no punctuation, no explanation.' '${escaped}'`;
+        const cmd = `pi --provider anthropic --model claude-haiku-4-5 --no-tools --no-session --print --mode text --system-prompt 'Generate a 3-6 word title for this coding session. Return ONLY the title, no quotes, no punctuation, no explanation. Be specific about what is being worked on.' '${escaped}'`;
         exec(cmd, { timeout: 10000 }, (err, stdout) => {
           if (err) {
             appendToDaily(`\n### ⚠️ Title gen failed (${timeStamp()})\n${err.message}\n`);
             return;
           }
           const title = stdout.trim().slice(0, 60);
-          if (title) {
-            process.stdout.write(`\x1b]2;π ${title}\x07`);
-            if (!pi.getSessionName()) pi.setSessionName(title);
+          if (title && !pi.getSessionName()) {
+            pi.setSessionName(title);
           }
         });
       }
