@@ -132,6 +132,27 @@ Behavioral rules:
 - If the session briefing is present above, treat it as authoritative system state.
 `.trim();
 
+// ── Per-turn slog reminder (injected at beginning of every turn) ────
+
+const SLOG_REMINDER = `
+## slog — log what matters
+
+After completing meaningful work this turn, run \`slog write\` to record it. If nothing significant happened, skip it. Categories:
+- **install / remove / update** — tools, services, dependencies
+- **configure** — env vars, plists, service settings, config files
+- **fix** — bug fixes, root causes found, debugging breakthroughs
+- **implement** — features built, functions added, major code changes
+- **todo** — deferred work, known issues to revisit
+- **milestone** — significant accomplishments, pipelines working end-to-end
+- **adr-create / adr-accept / adr-supersede** — architecture decisions
+- **migrate** — breaking changes, data migrations, renames
+- **security** — key rotations, token changes, permission updates
+- **progress** — project status updates, stories completed
+
+Format: \`slog write --action <action> --tool <tool> --detail "<what>" --reason "<why>"\`
+Do NOT slog routine file edits, code changes, or content writes.
+`.trim();
+
 // ── Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -178,11 +199,12 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    // System prompt awareness goes on every turn (re-applied, not accumulated)
-    // Includes dynamic timestamp (replaces system-context.ts custom_message which was persisted per-turn)
-    const systemPrompt = event.systemPrompt + "\n\n" + LIFECYCLE_AWARENESS +
-      `\n\n[Current time: ${currentTimestamp()}]` +
-      `\n[Remember: log infrastructure changes only (installs, service restarts, config edits, tool setup) with \`slog write --action ACTION --tool TOOL --detail "what" --reason "why"\` — do NOT slog routine file edits, code changes, or content writes]`;
+    // Every turn: slog reminder (beginning), lifecycle awareness (middle), timestamp (end)
+    const systemPrompt =
+      event.systemPrompt +
+      "\n\n" + SLOG_REMINDER +
+      "\n\n" + LIFECYCLE_AWARENESS +
+      "\n\nCurrent date and time: " + currentTimestamp();
 
     // Session briefing only on first turn
     if (hasBriefed) {
