@@ -1,1 +1,34 @@
-{"name":"pi-tools","version":"0.3.0","description":"Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search","license":"MIT","keywords":["pi-package","pi","pi-coding-agent"],"dependencies":{},"pi":{"extensions":["./repo-autopsy/index.ts","./ts-check/ts-check.ts","./codex-exec/codex-exec.ts","./session-reader/session-reader.ts","./session-lifecycle/index.ts","./skill-shortcut/skill-shortcut.ts","./ralph-loop/index.ts","./aliases/aliases.ts","./mcq/index.ts","./agent-secrets/agent-secrets.ts","./mcp-bridge/index.ts","./auto-update/auto-update.ts","./web-search/web-search.ts"]}}
+{
+  "name": "pi-tools",
+  "version": "0.4.0",
+  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./repo-autopsy/index.ts",
+      "./ts-check/ts-check.ts",
+      "./codex-exec/codex-exec.ts",
+      "./session-reader/session-reader.ts",
+      "./session-lifecycle/index.ts",
+      "./skill-shortcut/skill-shortcut.ts",
+      "./ralph-loop/index.ts",
+      "./aliases/aliases.ts",
+      "./mcq/index.ts",
+      "./agent-secrets/agent-secrets.ts",
+      "./mcp-bridge/index.ts",
+      "./auto-update/auto-update.ts",
+      "./web-search/web-search.ts"
+    ]
+  }
+}
