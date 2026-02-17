@@ -1,0 +1,570 @@
+Implemented the story in `session-lifecycle/index.ts`:
+
+- Updated import to include `spawn`:
+  - `session-lifecycle/index.ts:22`
+- Added helper:
+  - `session-lifecycle/index.ts:63`
+
+```ts
+function emitEvent(name: string, data: Record<string, unknown>): void {
+  const child = spawn(
+    "igs",
+    ["send", name, "--data", JSON.stringify(data)],
+    { detached: true, stdio: "ignore" }
+  );
+  child.unref();
+}
+```
+
+Validation:
+
+- `npx tsc --noEmit` could not run in this environment (`npx: command not found`).
+- Ran fallback compile check successfully:
+  - `bun build session-lifecycle/index.ts --outdir /tmp/session-lifecycle-build-check` (passed).
+
+
+--- STDERR ---
+OpenAI Codex v0.101.0 (research preview)
+--------
+workdir: /private/tmp/agent-loop/loop-mlpw2wv5-m8je81
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR]
+reasoning effort: none
+reasoning summaries: auto
+session id: 019c6917-60ee-7bb0-9f94-9a4e0fcf7628
+--------
+user
+
+
+## Project File Listing
+
+setup.sh
+skill-shortcut
+auto-update
+session-reader
+mcq
+session-lifecycle
+mcp-bridge
+repo-autopsy
+README.md
+package.json
+web-search
+ts-check
+agent-secrets
+codex-exec
+aliases
+ralph-loop
+prd.json
+
+---
+
+## Story: Add emitEvent helper using child_process.spawn (MEM-WIRE-1)
+
+In session-lifecycle/index.ts, add an emitEvent(name: string, data: Record<string, unknown>): void function. It must use child_process.spawn (already imported as exec, but spawn is needed) with detached: true and stdio: 'ignore', then call child.unref(). The command is: igs send <name> --data <JSON.stringify(data)>. This pattern ensures the spawned process survives parent exit (critical for session_shutdown which fires during process teardown). Import spawn from 'node:child_process' alongside the existing exec import. The function should be fire-and-forget — no await, no callbacks, no error handling that blocks the caller.
+
+## Acceptance Criteria
+- emitEvent function exists in session-lifecycle/index.ts
+- Uses child_process.spawn with detached: true and stdio: 'ignore'
+- Calls child.unref() after spawn
+- Command is 'igs' with args ['send', name, '--data', JSON.stringify(data)]
+- TypeScript compiles without errors: npx tsc --noEmit (or bun build check)
+
+## Instructions
+Implement the story above. Do NOT write tests — a separate reviewer will handle testing.
+Make clean, focused changes. Commit nothing — the harness handles git.
+If your changes break existing tests (not just the ones for this story), fix those tests to match the new interface. Changing a type or adding a required field means updating all consumers.
+mcp startup: no servers
+2026-02-17T00:54:25.889019Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5eca-bff9-7772-83bf-5daab07b9959
+2026-02-17T00:54:25.911264Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5ffd-d51d-7a13-b1fa-342be02f164b
+2026-02-17T00:54:25.944546Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6275-d69e-7b53-bb28-583bfe07e70c
+2026-02-17T00:54:26.043910Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5d40-288c-78b2-af66-36e0fae54073
+2026-02-17T00:54:26.092610Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6917-4f67-7182-8024-88842afa3fec
+2026-02-17T00:54:26.184664Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6482-5bab-7e53-bc62-5239d048a3c8
+2026-02-17T00:54:26.331039Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6485-58f0-7261-8508-37f3fb9356dd
+2026-02-17T00:54:26.431657Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6031-b7fb-7120-85b5-8abf34324910
+2026-02-17T00:54:26.475691Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5fe2-872d-7e93-87a3-71d37d75a127
+2026-02-17T00:54:26.590080Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5e50-6bc5-7861-a0a0-f77d68ec073f
+2026-02-17T00:54:26.694150Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6022-8a12-7ba0-b7e8-9c265e8ec17e
+2026-02-17T00:54:26.837099Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5fbb-e145-7c40-9913-218548629e57
+2026-02-17T00:54:26.988210Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5e21-7a30-7ed1-b686-e02ac2da8157
+2026-02-17T00:54:27.137616Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c647c-8066-7eb1-8782-06a844370303
+2026-02-17T00:54:27.252038Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c5fed-5e04-78c0-9a4e-9fddc7af084e
+
+thinking
+**Preparing initial commentary on file inspection**
+codex
+I’m implementing the `emitEvent` helper in `session-lifecycle/index.ts` with `spawn`/`unref` and then running a TypeScript compile check to confirm it passes. I’ll inspect the file first, apply a focused edit, and verify with `npx tsc --noEmit`.
+exec
+/bin/zsh -lc "ls -la && rg --files && sed -n '1,260p' session-lifecycle/index.ts" in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 53ms:
+total 64
+drwxr-xr-x  22 joel  wheel   704 Feb 16 16:54 .
+drwxr-xr-x   4 joel  wheel   128 Feb 16 16:53 ..
+-rw-r--r--   1 joel  wheel   100 Feb 16 16:52 .git
+-rw-r--r--   1 joel  wheel    24 Feb 16 16:52 .gitignore
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 agent-secrets
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 aliases
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 auto-update
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 codex-exec
+drwxr-xr-x   5 joel  wheel   160 Feb 16 16:52 mcp-bridge
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 mcq
+-rw-r--r--   1 joel  wheel   680 Feb 16 16:52 package.json
+-rw-r--r--   1 joel  wheel     5 Feb 16 16:54 pid
+-rw-r--r--   1 joel  wheel  5616 Feb 16 16:52 prd.json
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 ralph-loop
+-rw-r--r--   1 joel  wheel  3571 Feb 16 16:52 README.md
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 repo-autopsy
+drwxr-xr-x   4 joel  wheel   128 Feb 16 16:54 session-lifecycle
+drwxr-xr-x   3 joel  wheel    96 Feb 16 16:52 session-reader
+-rwxr-xr-x   1 joel  wheel  1176 Feb 16 16:52 setup.sh
+exec
+/bin/zsh -lc "sed -n '260,520p' session-lifecycle/index.ts" in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 53ms:
+    // fileOps has .read (Set) and .edited (Set), not .readFiles/.modifiedFiles
+    const readFiles = fileOps?.read ? [...fileOps.read] : [];
+    const modifiedFiles = fileOps?.edited ? [...fileOps.edited] : [];
+
+    const lines = [
+      `\n### ⚡ Compaction (${timeStamp()})`,
+      `${msgCount} messages summarized, ${tokensBefore.toLocaleString()} tokens reclaimed.`,
+    ];
+
+    if (modifiedFiles.length > 0) {
+      lines.push(`**Modified**: ${modifiedFiles.join(", ")}`);
+    }
+    if (readFiles.length > 0) {
+      const shown = readFiles.slice(0, 10);
+      const more = readFiles.length > 10 ? ` (+${readFiles.length - 10} more)` : "";
+      lines.push(`**Read**: ${shown.join(", ")}${more}`);
+    }
+    if (preparation.previousSummary) {
+      // Preserve the gist of what was already summarized
+      const gist = preparation.previousSummary.slice(0, 300).replace(/\n/g, " ");
+
+thinking
+**Adding event emitter helper with spawn**
+codex
+I found the target file and now I’m adding a focused helper near the existing utility functions: import `spawn`, define `emitEvent(...)`, and keep it fully fire-and-forget via `detached`, `stdio: 'ignore'`, and `unref()`. After that I’ll run TypeScript compile validation.
+exec
+/bin/zsh -lc 'cat package.json && rg "noUnusedLocals|tsconfig|typescript" -n .' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 53ms:
+{"name":"pi-tools","version":"0.3.0","description":"Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search","license":"MIT","keywords":["pi-package","pi","pi-coding-agent"],"dependencies":{},"pi":{"extensions":["./repo-autopsy/index.ts","./ts-check/ts-check.ts","./codex-exec/codex-exec.ts","./session-reader/session-reader.ts","./session-lifecycle/index.ts","./skill-shortcut/skill-shortcut.ts","./ralph-loop/index.ts","./aliases/aliases.ts","./mcq/index.ts","./agent-secrets/agent-secrets.ts","./mcp-bridge/index.ts","./auto-update/auto-update.ts","./web-search/web-search.ts"]}}./ts-check/ts-check.ts:8: * Requires: npm install -g @typescript/native-preview
+./ts-check/ts-check.ts:95:    if (existsSync(join(dir, "tsconfig.json"))) return dir;
+./ts-check/ts-check.ts:149:  if (path.endsWith(".tsx")) return "typescriptreact";
+./ts-check/ts-check.ts:152:  return "typescript";
+./ts-check/ts-check.ts:304:      if (!root) return { content: [{ type: "text", text: "No tsconfig.json found" }], details: {} };
+./setup.sh:41:  echo "  📦 npm install -g @typescript/native-preview..."
+./setup.sh:42:  npm install -g @typescript/native-preview 2>&1 | tail -1
+
+thinking
+**Verifying TypeScript config presence**
+file update
+M /private/tmp/agent-loop/loop-mlpw2wv5-m8je81/session-lifecycle/index.ts
+@@ -21,3 +21,3 @@
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+@@ -62,2 +62,11 @@
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+apply_patch(auto_approved=true) exited 0 in 39ms:
+Success. Updated the following files:
+M session-lifecycle/index.ts
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Running type check without emit**
+codex
+I’ve applied the code change. Next I’m running the TypeScript compile check (`npx tsc --noEmit`) to ensure there are no type errors from this update.
+exec
+/bin/zsh -lc 'npx tsc --noEmit' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 exited 127 in 52ms:
+zsh:1: command not found: npx
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Assessing Bun availability and compatibility**
+codex
+`npx` isn’t available in this environment, so I’m switching to the allowed fallback path and checking whether `bun` is available for a build/type-check command.
+exec
+/bin/zsh -lc 'bun --version && bun run --help >/dev/null 2>&1; echo "bun_ok=$?"' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 52ms:
+1.3.9
+bun_ok=0
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Testing build check approach**
+exec
+/bin/zsh -lc 'bunx tsc --noEmit' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 exited 1 in 93ms:
+Version 5.9.2
+tsc: The TypeScript Compiler - Version 5.9.2
+
+COMMON COMMANDS
+
+  tsc
+  Compiles the current project (tsconfig.json in the working directory.)
+
+  tsc app.ts util.ts
+  Ignoring tsconfig.json, compiles the specified files with default compiler options.
+
+  tsc -b
+  Build a composite project in the working directory.
+
+  tsc --init
+  Creates a tsconfig.json with the recommended settings in the working directory.
+
+  tsc -p ./path/to/tsconfig.json
+  Compiles the TypeScript project located at the specified path.
+
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Inspecting build commands**
+exec
+/bin/zsh -lc 'rg -n "tsc|bun build|typecheck|build" README.md session-lifecycle/index.acceptance.test.ts session-lifecycle/index.ts' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 exited 1 in 53ms:
+
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Testing build for type errors**
+codex
+There’s no project `tsconfig.json` here, so `tsc` can’t perform a full project check. I’m running a Bun TypeScript build on the modified file as the fallback compile validation.
+exec
+/bin/zsh -lc 'bun build session-lifecycle/index.ts --outdir /tmp/session-lifecycle-build-check' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 53ms:
+Bundled 3 modules in 3ms
+
+  index.js  18.65 KB  (entry point)
+
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+exec
+/bin/zsh -lc 'git diff -- session-lifecycle/index.ts' in /private/tmp/agent-loop/loop-mlpw2wv5-m8je81 succeeded in 52ms:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b5..0d207b9 100644
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@ function appendToDaily(text: string): void {
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+
+thinking
+**Confirming build approach and warnings**
+codex
+Implemented the story in `session-lifecycle/index.ts`:
+
+- Updated import to include `spawn`:
+  - `session-lifecycle/index.ts:22`
+- Added helper:
+  - `session-lifecycle/index.ts:63`
+
+```ts
+function emitEvent(name: string, data: Record<string, unknown>): void {
+  const child = spawn(
+    "igs",
+    ["send", name, "--data", JSON.stringify(data)],
+    { detached: true, stdio: "ignore" }
+  );
+  child.unref();
+}
+```
+
+Validation:
+
+- `npx tsc --noEmit` could not run in this environment (`npx: command not found`).
+- Ran fallback compile check successfully:
+  - `bun build session-lifecycle/index.ts --outdir /tmp/session-lifecycle-build-check` (passed).
+file update:
+diff --git a/session-lifecycle/index.ts b/session-lifecycle/index.ts
+index 8c185b59bcae4f703b587ef8cce06fafe25c4495..0d207b98e4cb36626feedc87c2bffcf2a89def00
+--- a/session-lifecycle/index.ts
++++ b/session-lifecycle/index.ts
+@@ -19,7 +19,7 @@
+ // Writes:
+ //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
+ 
+-import { exec } from "node:child_process";
++import { exec, spawn } from "node:child_process";
+ import * as fs from "node:fs";
+ import * as os from "node:os";
+ import * as path from "node:path";
+@@ -60,6 +60,15 @@
+   } catch {}
+ }
+ 
++function emitEvent(name: string, data: Record<string, unknown>): void {
++  const child = spawn(
++    "igs",
++    ["send", name, "--data", JSON.stringify(data)],
++    { detached: true, stdio: "ignore" }
++  );
++  child.unref();
++}
++
+ function timeStamp(): string {
+   return new Date().toLocaleTimeString("en-US", {
+     hour: "2-digit",
+
+tokens used
+13,172

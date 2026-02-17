@@ -1,0 +1,49 @@
+{
+  "title": "ADR-0021 Phase 1: Wire session-lifecycle to emit Inngest memory events",
+  "description": "The session-lifecycle extension (session-lifecycle/index.ts) currently handles briefing, compaction flush, and shutdown handoff — but never fires Inngest events. The observe-session Inngest function is registered and waiting for memory/session.compaction.pending and memory/session.ended events. This PRD wires the extension to emit those events via spawning `igs send`.",
+  "stories": [
+    {
+      "id": "MEM-WIRE-1",
+      "title": "Add emitEvent helper using child_process.spawn",
+      "description": "In session-lifecycle/index.ts, add an emitEvent(name: string, data: Record<string, unknown>): void function. It must use child_process.spawn (already imported as exec, but spawn is needed) with detached: true and stdio: 'ignore', then call child.unref(). The command is: igs send <name> --data <JSON.stringify(data)>. This pattern ensures the spawned process survives parent exit (critical for session_shutdown which fires during process teardown). Import spawn from 'node:child_process' alongside the existing exec import. The function should be fire-and-forget — no await, no callbacks, no error handling that blocks the caller.",
+      "acceptance_criteria": [
+        "emitEvent function exists in session-lifecycle/index.ts",
+        "Uses child_process.spawn with detached: true and stdio: 'ignore'",
+        "Calls child.unref() after spawn",
+        "Command is 'igs' with args ['send', name, '--data', JSON.stringify(data)]",
+        "TypeScript compiles without errors: npx tsc --noEmit (or bun build check)"
+      ],
+      "priority": 1,
+      "passes": false
+    },
+    {
+      "id": "MEM-WIRE-2",
+      "title": "Emit memory/session.compaction.pending from session_before_compact",
+      "description": "In the session_before_compact handler, after the existing appendToDaily call, add a call to emitEvent('memory/session.compaction.pending', payload). The payload must match the schema from ADR-0021:\n\n- sessionId: string — use pi.getSessionId() if available, otherwise generate a random UUID via crypto.randomUUID()\n- dedupeKey: string — use crypto.createHash('sha256').update(sessionId + 'compaction' + Date.now().toString()).digest('hex')\n- trigger: 'compaction' (literal)\n- messages: string — serialize preparation.messagesToSummarize. Use JSON.stringify of an array of objects with role and content from each message. Keep it simple — just map over messagesToSummarize extracting .role and .content fields.\n- messageCount: number — preparation.messagesToSummarize?.length || 0\n- tokensBefore: number — preparation.tokensBefore || 0\n- filesRead: string[] — the readFiles array already computed in the handler\n- filesModified: string[] — the modifiedFiles array already computed in the handler\n- capturedAt: string — new Date().toISOString()\n- schemaVersion: 1\n\nImport crypto from 'node:crypto' if not already imported.",
+      "acceptance_criteria": [
+        "session_before_compact handler calls emitEvent with event name 'memory/session.compaction.pending'",
+        "Payload includes all required fields: sessionId, dedupeKey, trigger, messages, messageCount, tokensBefore, filesRead, filesModified, capturedAt, schemaVersion",
+        "trigger field is literally 'compaction'",
+        "schemaVersion is literally 1",
+        "TypeScript compiles without errors"
+      ],
+      "priority": 2,
+      "passes": false
+    },
+    {
+      "id": "MEM-WIRE-3",
+      "title": "Emit memory/session.ended from session_shutdown",
+      "description": "In the session_shutdown handler, after the existing appendToDaily call, add a call to emitEvent('memory/session.ended', payload) — but ONLY if userMessageCount >= 5 (skip trivial sessions). The payload must match:\n\n- sessionId: string — same approach as MEM-WIRE-2 (pi.getSessionId() or crypto.randomUUID())\n- dedupeKey: string — crypto.createHash('sha256').update(sessionId + 'shutdown' + Date.now().toString()).digest('hex')\n- trigger: 'shutdown' (literal)\n- messages: string — this is trickier because session_shutdown doesn't receive messages directly. For now, use JSON.stringify({ note: 'Session transcript not available at shutdown — use daily log', sessionName, duration, userMessageCount }). This is a known limitation — the observe function will get a summary rather than full messages.\n- messageCount: number — userMessageCount (the tracked count)\n- userMessageCount: number — same as messageCount\n- duration: number — the duration variable already computed (in minutes, convert to seconds by * 60)\n- sessionName: string | undefined — pi.getSessionName() or the sessionName variable already computed\n- filesRead: string[] — empty array [] (not tracked at shutdown)\n- filesModified: string[] — empty array [] (not tracked at shutdown)\n- capturedAt: string — new Date().toISOString()\n- schemaVersion: 1\n\nThe >= 5 message guard prevents noise from quick sessions.",
+      "acceptance_criteria": [
+        "session_shutdown handler calls emitEvent with event name 'memory/session.ended'",
+        "emitEvent is ONLY called when userMessageCount >= 5",
+        "Payload includes all required fields: sessionId, dedupeKey, trigger, messages, messageCount, userMessageCount, duration, sessionName, filesRead, filesModified, capturedAt, schemaVersion",
+        "trigger field is literally 'shutdown'",
+        "duration is in seconds (minutes * 60)",
+        "TypeScript compiles without errors"
+      ],
+      "priority": 3,
+      "passes": false
+    }
+  ]
+}

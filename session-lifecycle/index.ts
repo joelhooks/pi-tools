@@ -19,7 +19,7 @@
 // Writes:
 //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
 
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -58,6 +58,15 @@ function appendToDaily(text: string): void {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.appendFileSync(p, text, "utf-8");
   } catch {}
+}
+
+function emitEvent(name: string, data: Record<string, unknown>): void {
+  const child = spawn(
+    "igs",
+    ["send", name, "--data", JSON.stringify(data)],
+    { detached: true, stdio: "ignore" }
+  );
+  child.unref();
 }
 
 function timeStamp(): string {
