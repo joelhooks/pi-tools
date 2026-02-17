@@ -14,7 +14,8 @@
         "TypeScript compiles without errors: npx tsc --noEmit (or bun build check)"
       ],
       "priority": 1,
-      "passes": false
+      "passes": false,
+      "skipped": true
     },
     {
       "id": "MEM-WIRE-2",

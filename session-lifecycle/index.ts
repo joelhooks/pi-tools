@@ -20,6 +20,7 @@
 //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
 
 import { exec, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -290,6 +291,33 @@ export default function (pi: ExtensionAPI) {
     }
 
     appendToDaily(lines.join("\n") + "\n");
+
+    const maybeGetSessionId = (pi as { getSessionId?: () => string | undefined }).getSessionId;
+    const existingSessionId = typeof maybeGetSessionId === "function" ? maybeGetSessionId() : undefined;
+    const sessionId = existingSessionId || crypto.randomUUID();
+    const dedupeKey = crypto
+      .createHash("sha256")
+      .update(sessionId + "compaction" + Date.now().toString())
+      .digest("hex");
+    const messages = JSON.stringify(
+      (preparation.messagesToSummarize || []).map((message) => ({
+        role: message.role,
+        content: message.content,
+      }))
+    );
+
+    emitEvent("memory/session.compaction.pending", {
+      sessionId,
+      dedupeKey,
+      trigger: "compaction",
+      messages,
+      messageCount: preparation.messagesToSummarize?.length || 0,
+      tokensBefore: preparation.tokensBefore || 0,
+      filesRead: readFiles,
+      filesModified: modifiedFiles,
+      capturedAt: new Date().toISOString(),
+      schemaVersion: 1,
+    });
 
     // Return nothing — let default compaction proceed
   });
