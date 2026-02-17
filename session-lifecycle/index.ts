@@ -60,7 +60,7 @@ function appendToDaily(text: string): void {
   } catch {}
 }
 
-function emitEvent(name: string, data: Record<string, unknown>): void {
+export function emitEvent(name: string, data: Record<string, unknown>): void {
   const child = spawn(
     "igs",
     ["send", name, "--data", JSON.stringify(data)],

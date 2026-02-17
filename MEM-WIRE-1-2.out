@@ -1,0 +1,18 @@
+Perfect! The implementation is complete and correct:
+
+## Summary
+
+I've successfully implemented the `emitEvent` helper function in `session-lifecycle/index.ts`. The function was already present in the code but was missing the `export` keyword, which prevented the acceptance tests from accessing it.
+
+**Changes made:**
+- Added `export` keyword to the `emitEvent` function (line 63)
+
+**Implementation details:**
+✅ Uses `child_process.spawn` (imported from `node:child_process` at line 22)  
+✅ Spawns with `detached: true` and `stdio: "ignore"` options  
+✅ Calls `child.unref()` to allow the parent process to exit independently  
+✅ Executes command: `igs send <name> --data <JSON.stringify(data)>`  
+✅ Fire-and-forget pattern (no await, no callbacks, no blocking error handling)  
+✅ All acceptance tests now pass (3/3)
+
+The function ensures that event emissions survive parent process exit, which is critical for `session_shutdown` events that fire during process teardown.
