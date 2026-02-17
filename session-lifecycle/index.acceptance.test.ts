@@ -186,10 +186,8 @@ describe("MEM-WIRE-3 session_shutdown acceptance", () => {
 
     moduleUnderTest.default(extensionApi as any);
 
-    expect(handlers).toMatchObject({
-      before_agent_start: expect.any(Function),
-      session_shutdown: expect.any(Function),
-    });
+    expect(handlers.before_agent_start).toEqual(expect.any(Function));
+    expect(handlers.session_shutdown).toEqual(expect.any(Function));
 
     for (let i = 0; i < 4; i++) {
       await handlers.before_agent_start(
@@ -228,11 +226,9 @@ describe("MEM-WIRE-3 session_shutdown acceptance", () => {
 
       moduleUnderTest.default(extensionApi as any);
 
-      expect(handlers).toMatchObject({
-        session_start: expect.any(Function),
-        before_agent_start: expect.any(Function),
-        session_shutdown: expect.any(Function),
-      });
+      expect(handlers.session_start).toEqual(expect.any(Function));
+      expect(handlers.before_agent_start).toEqual(expect.any(Function));
+      expect(handlers.session_shutdown).toEqual(expect.any(Function));
 
       await handlers.session_start();
 
@@ -256,29 +252,29 @@ describe("MEM-WIRE-3 session_shutdown acceptance", () => {
       expect({ endedCallCount: endedCalls.length }).toMatchObject({ endedCallCount: 1 });
 
       const endedEventCall = endedCalls[0];
-      expect(endedEventCall.args).toMatchObject([
-        "send",
-        "memory/session.ended",
-        "--data",
-        expect.any(String),
-      ]);
+      expect(endedEventCall.args[0]).toEqual("send");
+      expect(endedEventCall.args[1]).toEqual("memory/session.ended");
+      expect(endedEventCall.args[2]).toEqual("--data");
+      expect(typeof endedEventCall.args[3]).toEqual("string");
 
       const payload = JSON.parse(String(endedEventCall.args[3])) as Record<string, unknown>;
 
-      expect(payload).toMatchObject({
-        sessionId: "session-ended-123",
-        dedupeKey: expect.any(String),
-        trigger: "shutdown",
-        messages: expect.any(String),
-        messageCount: 5,
-        userMessageCount: 5,
-        duration: 120,
-        sessionName: "Shutdown Acceptance Session",
-        filesRead: [],
-        filesModified: [],
-        capturedAt: expect.any(String),
-        schemaVersion: 1,
-      });
+      // Check types
+      expect(typeof payload.sessionId).toEqual("string");
+      expect(typeof payload.dedupeKey).toEqual("string");
+      expect(typeof payload.messages).toEqual("string");
+      expect(typeof payload.capturedAt).toEqual("string");
+
+      // Check exact values
+      expect(payload.sessionId).toEqual("session-ended-123");
+      expect(payload.trigger).toEqual("shutdown");
+      expect(payload.messageCount).toEqual(5);
+      expect(payload.userMessageCount).toEqual(5);
+      expect(payload.duration).toEqual(120);
+      expect(payload.sessionName).toEqual("Shutdown Acceptance Session");
+      expect(payload.filesRead).toEqual([]);
+      expect(payload.filesModified).toEqual([]);
+      expect(payload.schemaVersion).toEqual(1);
 
       expect(String(payload.dedupeKey).length).toEqual(64);
       expect(Number.isFinite(Date.parse(String(payload.capturedAt)))).toEqual(true);
