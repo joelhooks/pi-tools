@@ -343,5 +343,36 @@ export default function (pi: ExtensionAPI) {
     ];
 
     appendToDaily(handoff.join("\n") + "\n");
+
+    if (userMessageCount >= 5) {
+      const maybeGetSessionId = (pi as { getSessionId?: () => string | undefined }).getSessionId;
+      const existingSessionId = typeof maybeGetSessionId === "function" ? maybeGetSessionId() : undefined;
+      const sessionId = existingSessionId || crypto.randomUUID();
+      const dedupeKey = crypto
+        .createHash("sha256")
+        .update(sessionId + "shutdown" + Date.now().toString())
+        .digest("hex");
+      const messages = JSON.stringify({
+        note: "Session transcript not available at shutdown — use daily log",
+        sessionName,
+        duration,
+        userMessageCount,
+      });
+
+      emitEvent("memory/session.ended", {
+        sessionId,
+        dedupeKey,
+        trigger: "shutdown",
+        messages,
+        messageCount: userMessageCount,
+        userMessageCount,
+        duration: duration * 60,
+        sessionName,
+        filesRead: [],
+        filesModified: [],
+        capturedAt: new Date().toISOString(),
+        schemaVersion: 1,
+      });
+    }
   });
 }

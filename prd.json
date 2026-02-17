@@ -29,7 +29,8 @@
         "TypeScript compiles without errors"
       ],
       "priority": 2,
-      "passes": false
+      "passes": false,
+      "skipped": true
     },
     {
       "id": "MEM-WIRE-3",

@@ -163,3 +163,135 @@ describe("MEM-WIRE-2 session_before_compact acceptance", () => {
     ]);
   });
 });
+
+describe("MEM-WIRE-3 session_shutdown acceptance", () => {
+  beforeEach(() => {
+    spawnCalls.length = 0;
+    callOrder.length = 0;
+    appendCalls.length = 0;
+    spawnMock.mockClear();
+    unrefMock.mockClear();
+  });
+
+  it("does not emit memory/session.ended when userMessageCount is below 5", async () => {
+    const handlers: Record<string, (...args: unknown[]) => unknown> = {};
+    const extensionApi = {
+      on: mock((eventName: string, handler: (...args: unknown[]) => unknown) => {
+        handlers[eventName] = handler;
+      }),
+      getSessionId: mock(() => "session-short-123"),
+      getSessionName: mock(() => "Short Session"),
+      setSessionName: mock(() => undefined),
+    };
+
+    moduleUnderTest.default(extensionApi as any);
+
+    expect(handlers).toMatchObject({
+      before_agent_start: expect.any(Function),
+      session_shutdown: expect.any(Function),
+    });
+
+    for (let i = 0; i < 4; i++) {
+      await handlers.before_agent_start(
+        { prompt: `Message ${i + 1}`, systemPrompt: "system prompt" },
+        {}
+      );
+    }
+
+    await handlers.session_shutdown();
+
+    const endedCalls = spawnCalls.filter(
+      (call) =>
+        call.command === "igs" &&
+        call.args[0] === "send" &&
+        call.args[1] === "memory/session.ended"
+    );
+
+    expect({ endedCallCount: endedCalls.length }).toMatchObject({ endedCallCount: 0 });
+  });
+
+  it("emits memory/session.ended with required shutdown payload when userMessageCount is at least 5", async () => {
+    const originalDateNow = Date.now;
+    let now = 1_700_000_000_000;
+    Date.now = () => now;
+
+    try {
+      const handlers: Record<string, (...args: unknown[]) => unknown> = {};
+      const extensionApi = {
+        on: mock((eventName: string, handler: (...args: unknown[]) => unknown) => {
+          handlers[eventName] = handler;
+        }),
+        getSessionId: mock(() => "session-ended-123"),
+        getSessionName: mock(() => "Shutdown Acceptance Session"),
+        setSessionName: mock(() => undefined),
+      };
+
+      moduleUnderTest.default(extensionApi as any);
+
+      expect(handlers).toMatchObject({
+        session_start: expect.any(Function),
+        before_agent_start: expect.any(Function),
+        session_shutdown: expect.any(Function),
+      });
+
+      await handlers.session_start();
+
+      for (let i = 0; i < 5; i++) {
+        await handlers.before_agent_start(
+          { prompt: `User message ${i + 1}`, systemPrompt: "system prompt" },
+          {}
+        );
+      }
+
+      now += 2 * 60 * 1000;
+      await handlers.session_shutdown();
+
+      const endedCalls = spawnCalls.filter(
+        (call) =>
+          call.command === "igs" &&
+          call.args[0] === "send" &&
+          call.args[1] === "memory/session.ended"
+      );
+
+      expect({ endedCallCount: endedCalls.length }).toMatchObject({ endedCallCount: 1 });
+
+      const endedEventCall = endedCalls[0];
+      expect(endedEventCall.args).toMatchObject([
+        "send",
+        "memory/session.ended",
+        "--data",
+        expect.any(String),
+      ]);
+
+      const payload = JSON.parse(String(endedEventCall.args[3])) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        sessionId: "session-ended-123",
+        dedupeKey: expect.any(String),
+        trigger: "shutdown",
+        messages: expect.any(String),
+        messageCount: 5,
+        userMessageCount: 5,
+        duration: 120,
+        sessionName: "Shutdown Acceptance Session",
+        filesRead: [],
+        filesModified: [],
+        capturedAt: expect.any(String),
+        schemaVersion: 1,
+      });
+
+      expect(String(payload.dedupeKey).length).toEqual(64);
+      expect(Number.isFinite(Date.parse(String(payload.capturedAt)))).toEqual(true);
+
+      const summarizedMessages = JSON.parse(String(payload.messages)) as Record<string, unknown>;
+      expect(summarizedMessages).toMatchObject({
+        note: "Session transcript not available at shutdown — use daily log",
+        sessionName: "Shutdown Acceptance Session",
+        userMessageCount: 5,
+      });
+      expect(typeof summarizedMessages.duration).toEqual("number");
+    } finally {
+      Date.now = originalDateNow;
+    }
+  });
+});
