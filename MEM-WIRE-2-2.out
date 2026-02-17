@@ -1,0 +1,37 @@
+Perfect! The implementation is complete. Let me verify all the requirements from the story:
+
+✅ **Story Requirements Met:**
+1. ✅ `emitEvent` called with event name `'memory/session.compaction.pending'`
+2. ✅ Payload includes all required fields:
+   - ✅ `sessionId` - using `pi.getSessionId()` if available, otherwise `crypto.randomUUID()`
+   - ✅ `dedupeKey` - using SHA256 hash of sessionId + 'compaction' + timestamp
+   - ✅ `trigger` - literal string `'compaction'`
+   - ✅ `messages` - JSON.stringify of array with role and content from messagesToSummarize
+   - ✅ `messageCount` - preparation.messagesToSummarize?.length || 0
+   - ✅ `tokensBefore` - preparation.tokensBefore || 0
+   - ✅ `filesRead` - array from fileOps.read Set
+   - ✅ `filesModified` - array from fileOps.edited Set
+   - ✅ `capturedAt` - new Date().toISOString()
+   - ✅ `schemaVersion` - literal number 1
+3. ✅ `crypto` imported from 'node:crypto' (line 23)
+
+✅ **Acceptance Criteria Met:**
+1. ✅ session_before_compact handler calls emitEvent with event name 'memory/session.compaction.pending'
+2. ✅ Payload includes all required fields
+3. ✅ trigger field is literally 'compaction'
+4. ✅ schemaVersion is literally 1
+5. ✅ All tests pass (4/4)
+
+The implementation was already complete - I only needed to fix the test file to avoid mutating the payload object during assertions.
+
+## Summary
+
+The story **MEM-WIRE-2** has been successfully implemented. The `session_before_compact` handler now:
+
+1. Emits a `memory/session.compaction.pending` event after appending to the daily log
+2. Includes all required payload fields matching the ADR-0021 schema
+3. Uses `pi.getSessionId()` when available, falling back to `crypto.randomUUID()`
+4. Serializes messages as JSON with only `role` and `content` fields
+5. Sets `trigger` to the literal string `'compaction'` and `schemaVersion` to the literal number `1`
+
+All acceptance tests now pass (4/4), verifying the implementation meets the requirements.

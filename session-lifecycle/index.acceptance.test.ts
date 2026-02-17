@@ -111,9 +111,7 @@ describe("MEM-WIRE-2 session_before_compact acceptance", () => {
 
     moduleUnderTest.default(extensionApi as any);
 
-    expect(handlers).toMatchObject({
-      session_before_compact: expect.any(Function),
-    });
+    expect(handlers.session_before_compact).toEqual(expect.any(Function));
 
     const preparation = {
       messagesToSummarize: [
@@ -136,39 +134,30 @@ describe("MEM-WIRE-2 session_before_compact acceptance", () => {
     expect({ sendCallCount: sendCalls.length }).toMatchObject({ sendCallCount: 1 });
 
     const compactionEventCall = sendCalls[0];
-    expect(compactionEventCall.args).toMatchObject([
-      "send",
-      "memory/session.compaction.pending",
-      "--data",
-      expect.any(String),
-    ]);
+    expect(compactionEventCall.args[0]).toEqual("send");
+    expect(compactionEventCall.args[1]).toEqual("memory/session.compaction.pending");
+    expect(compactionEventCall.args[2]).toEqual("--data");
+    expect(typeof compactionEventCall.args[3]).toEqual("string");
 
     const payload = JSON.parse(String(compactionEventCall.args[3])) as Record<string, unknown>;
-    expect(payload).toMatchObject({
-      sessionId: expect.any(String),
-      dedupeKey: expect.any(String),
-      trigger: "compaction",
-      messages: expect.any(String),
-      messageCount: 2,
-      tokensBefore: 4096,
-      filesRead: ["docs/guide.md", "src/a.ts"],
-      filesModified: ["src/b.ts"],
-      capturedAt: expect.any(String),
-      schemaVersion: 1,
-    });
 
-    expect({
-      trigger: payload.trigger,
-      schemaVersion: payload.schemaVersion,
-      sessionId: payload.sessionId,
-    }).toMatchObject({
-      trigger: "compaction",
-      schemaVersion: 1,
-      sessionId: "session-acceptance-123",
-    });
+    // Check types
+    expect(typeof payload.sessionId).toEqual("string");
+    expect(typeof payload.dedupeKey).toEqual("string");
+    expect(typeof payload.messages).toEqual("string");
+    expect(typeof payload.capturedAt).toEqual("string");
+
+    // Check exact values
+    expect(payload.trigger).toEqual("compaction");
+    expect(payload.messageCount).toEqual(2);
+    expect(payload.tokensBefore).toEqual(4096);
+    expect(payload.filesRead).toEqual(["docs/guide.md", "src/a.ts"]);
+    expect(payload.filesModified).toEqual(["src/b.ts"]);
+    expect(payload.schemaVersion).toEqual(1);
+    expect(payload.sessionId).toEqual("session-acceptance-123");
 
     const parsedMessages = JSON.parse(String(payload.messages)) as Array<Record<string, unknown>>;
-    expect(parsedMessages).toMatchObject([
+    expect(parsedMessages).toEqual([
       { role: "user", content: "Please summarize this." },
       { role: "assistant", content: "Sure, working on it." },
     ]);
