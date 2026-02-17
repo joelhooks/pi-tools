@@ -1,9 +1,13 @@
 {
   "name": "pi-tools",
   "version": "0.4.0",
-  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search",
+  "description": "Joel's pi extensions \u2014 repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "pi-coding-agent"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1"
   },
@@ -28,7 +32,8 @@
       "./agent-secrets/agent-secrets.ts",
       "./mcp-bridge/index.ts",
       "./auto-update/auto-update.ts",
-      "./web-search/web-search.ts"
+      "./web-search/web-search.ts",
+      "./inbox-watcher/index.ts"
     ]
   }
 }
