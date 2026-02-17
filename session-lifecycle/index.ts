@@ -1,4 +1,4 @@
-// Session Lifecycle - auto-briefing, pre-compaction flush, shutdown handoff.
+// Session Lifecycle - auto-briefing, pre-compaction flush, shutdown handoff, session naming.
 //
 // Eliminates manual continuation prompts by automatically injecting
 // system context at session start, preserving key context before
@@ -10,6 +10,9 @@
 //   session_before_compact - flush metadata to daily log before summarization
 //   session_shutdown       - auto-name session, write handoff to daily log
 //
+// Tools:
+//   name_session           - LLM-callable tool to set session name mid-conversation
+//
 // Reads:
 //   ~/.joelclaw/workspace/MEMORY.md              - curated long-term memory
 //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - today's daily log
@@ -19,10 +22,12 @@
 // Writes:
 //   ~/.joelclaw/workspace/memory/YYYY-MM-DD.md   - compaction flush + session handoff
 
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 // ── Paths ───────────────────────────────────────────────────────────
@@ -60,6 +65,15 @@ function appendToDaily(text: string): void {
   } catch {}
 }
 
+export function emitEvent(name: string, data: Record<string, unknown>): void {
+  const child = spawn(
+    "igs",
+    ["send", name, "--data", JSON.stringify(data)],
+    { detached: true, stdio: "ignore" }
+  );
+  child.unref();
+}
+
 function timeStamp(): string {
   return new Date().toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -81,6 +95,60 @@ function recentSlog(count = 5): string[] {
       return `- ${line.slice(0, 100)}`;
     }
   });
+}
+
+// ── Daily log filtering ─────────────────────────────────────
+
+const MAX_DAILY_BYTES = 4096; // ~1K tokens — hard cap
+
+/** Extract signal from daily log, skip internal bookkeeping noise. */
+function filteredDailyLog(content: string): string {
+  // Split into sections by ### headers
+  const sections = content.split(/(?=^### )/m).filter(Boolean);
+
+  const keep: string[] = [];
+
+  for (const section of sections) {
+    // Always keep: session handoffs
+    if (section.startsWith("### 📋")) {
+      keep.push(section.trim());
+      continue;
+    }
+    // Keep last few observations (session summaries have useful context)
+    if (section.startsWith("### 🔭 Observations")) {
+      keep.push(section.trim());
+      continue;
+    }
+    // Skip: compaction dumps, title-gen errors, reflections (derivative of observations)
+    if (
+      section.startsWith("### ⚡ Compaction") ||
+      section.startsWith("### ⚠️ Title gen failed") ||
+      section.startsWith("### 🔭 Reflected")
+    ) {
+      continue;
+    }
+    // Keep anything else (unknown section types)
+    keep.push(section.trim());
+  }
+
+  // For observations, only keep the last 3 (most recent context)
+  const observations = keep.filter((s) => s.startsWith("### 🔭 Observations"));
+  const nonObservations = keep.filter((s) => !s.startsWith("### 🔭 Observations"));
+  const recentObs = observations.slice(-3);
+
+  let result = [...nonObservations, ...recentObs].join("\n\n");
+
+  // Hard cap as safety net
+  if (result.length > MAX_DAILY_BYTES) {
+    result = result.slice(-MAX_DAILY_BYTES);
+    // Clean up — don't start mid-line
+    const firstNewline = result.indexOf("\n");
+    if (firstNewline > 0) {
+      result = "…(truncated)\n" + result.slice(firstNewline + 1);
+    }
+  }
+
+  return result;
 }
 
 function activeProjects(): string[] {
@@ -130,6 +198,28 @@ Behavioral rules:
 - Do NOT re-read MEMORY.md or the daily log unless the user asks or you need to verify something changed mid-session.
 - When you make a key decision, learn a hard-won debugging insight, or discover a user preference, call it out explicitly — compaction preserves file metadata but conversation nuance can be lost.
 - If the session briefing is present above, treat it as authoritative system state.
+- After 2-3 exchanges when the session topic is clear, use the \`name_session\` tool to give this session a descriptive 3-6 word name.
+`.trim();
+
+// ── Per-turn slog reminder (injected at beginning of every turn) ────
+
+const SLOG_REMINDER = `
+## slog — log what matters
+
+After completing meaningful work this turn, run \`slog write\` to record it. If nothing significant happened, skip it. Categories:
+- **install / remove / update** — tools, services, dependencies
+- **configure** — env vars, plists, service settings, config files
+- **fix** — bug fixes, root causes found, debugging breakthroughs
+- **implement** — features built, functions added, major code changes
+- **todo** — deferred work, known issues to revisit
+- **milestone** — significant accomplishments, pipelines working end-to-end
+- **adr-create / adr-accept / adr-supersede** — architecture decisions
+- **migrate** — breaking changes, data migrations, renames
+- **security** — key rotations, token changes, permission updates
+- **progress** — project status updates, stories completed
+
+Format: \`slog write --action <action> --tool <tool> --detail "<what>" --reason "<why>"\`
+Do NOT slog routine file edits, code changes, or content writes.
 `.trim();
 
 // ── Extension ───────────────────────────────────────────────────────
@@ -139,6 +229,40 @@ export default function (pi: ExtensionAPI) {
   let sessionStartTime = Date.now();
   let userMessageCount = 0;
   let firstUserMessage = "";
+
+  // ── name_session tool: let the agent name the session ───────
+
+  pi.registerTool({
+    name: "name_session",
+    label: "Name Session",
+    description:
+      "Set a descriptive name for this session (shown in session selector). " +
+      "Call this after 2-3 exchanges when the session's purpose is clear. " +
+      "Use 3-6 words that capture what's being worked on, e.g. " +
+      "'Fix daily log context blowout' or 'K8s article fact checking'.",
+    parameters: Type.Object({
+      name: Type.String({
+        description: "Session name, 3-6 words, specific to the work being done",
+      }),
+    }),
+    async execute(_toolCallId, params) {
+      const name = params.name.slice(0, 60).trim();
+      if (!name) {
+        return {
+          content: [{ type: "text" as const, text: "Name cannot be empty." }],
+        };
+      }
+      pi.setSessionName(name);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Session named: "${name}"`,
+          },
+        ],
+      };
+    },
+  });
 
   // ── session_start: reset tracking state ─────────────────────
 
@@ -154,35 +278,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     userMessageCount++;
 
-    // Capture first user message for auto-naming and terminal title
+    // Capture first user message for session naming (used at shutdown fallback)
     if (!firstUserMessage && event.prompt) {
       firstUserMessage =
         typeof event.prompt === "string"
           ? event.prompt.slice(0, 200)
           : "";
-
-      // Generate session name with haiku via pi --print (fire-and-forget, no stdout writes)
-      if (firstUserMessage) {
-        const escaped = firstUserMessage.slice(0, 300).replace(/'/g, "'\\''");
-        const cmd = `pi --provider anthropic --model claude-haiku-4-5 --no-tools --no-session --print --mode text --system-prompt 'Generate a 3-6 word title for this coding session. Return ONLY the title, no quotes, no punctuation, no explanation. Be specific about what is being worked on.' '${escaped}'`;
-        exec(cmd, { timeout: 10000 }, (err, stdout) => {
-          if (err) {
-            appendToDaily(`\n### ⚠️ Title gen failed (${timeStamp()})\n${err.message}\n`);
-            return;
-          }
-          const title = stdout.trim().slice(0, 60);
-          if (title) {
-            pi.setSessionName(title);
-          }
-        });
-      }
     }
 
-    // System prompt awareness goes on every turn (re-applied, not accumulated)
-    // Includes dynamic timestamp (replaces system-context.ts custom_message which was persisted per-turn)
-    const systemPrompt = event.systemPrompt + "\n\n" + LIFECYCLE_AWARENESS +
-      `\n\n[Current time: ${currentTimestamp()}]` +
-      `\n[Remember: log infrastructure changes only (installs, service restarts, config edits, tool setup) with \`slog write --action ACTION --tool TOOL --detail "what" --reason "why"\` — do NOT slog routine file edits, code changes, or content writes]`;
+    // Every turn: slog reminder (beginning), lifecycle awareness (middle), timestamp (end)
+    const systemPrompt =
+      event.systemPrompt +
+      "\n\n" + SLOG_REMINDER +
+      "\n\n" + LIFECYCLE_AWARENESS +
+      "\n\nCurrent date and time: " + currentTimestamp();
 
     // Session briefing only on first turn
     if (hasBriefed) {
@@ -200,7 +309,10 @@ export default function (pi: ExtensionAPI) {
 
     const daily = readSafe(dailyLogPath());
     if (daily) {
-      sections.push("## Today's Log\n\n" + daily.trim());
+      const filtered = filteredDailyLog(daily);
+      if (filtered) {
+        sections.push("## Today's Log\n\n" + filtered);
+      }
     }
 
     const slog = recentSlog(5);
@@ -260,13 +372,40 @@ export default function (pi: ExtensionAPI) {
 
     appendToDaily(lines.join("\n") + "\n");
 
+    const maybeGetSessionId = (pi as { getSessionId?: () => string | undefined }).getSessionId;
+    const existingSessionId = typeof maybeGetSessionId === "function" ? maybeGetSessionId() : undefined;
+    const sessionId = existingSessionId || crypto.randomUUID();
+    const dedupeKey = crypto
+      .createHash("sha256")
+      .update(sessionId + "compaction" + Date.now().toString())
+      .digest("hex");
+    const messages = JSON.stringify(
+      (preparation.messagesToSummarize || []).map((message: { role: string; content: string }) => ({
+        role: message.role,
+        content: message.content,
+      }))
+    );
+
+    emitEvent("memory/session.compaction.pending", {
+      sessionId,
+      dedupeKey,
+      trigger: "compaction",
+      messages,
+      messageCount: preparation.messagesToSummarize?.length || 0,
+      tokensBefore: preparation.tokensBefore || 0,
+      filesRead: readFiles,
+      filesModified: modifiedFiles,
+      capturedAt: new Date().toISOString(),
+      schemaVersion: 1,
+    });
+
     // Return nothing — let default compaction proceed
   });
 
   // ── session_shutdown: auto-name + handoff ───────────────────
 
   pi.on("session_shutdown", async () => {
-    // Auto-name at shutdown only if haiku didn't set one
+    // Fallback: if agent never called name_session, use first user message
     if (!pi.getSessionName() && firstUserMessage) {
       const autoName = firstUserMessage
         .replace(/\n.*/s, "").slice(0, 60).trim();
@@ -284,5 +423,36 @@ export default function (pi: ExtensionAPI) {
     ];
 
     appendToDaily(handoff.join("\n") + "\n");
+
+    if (userMessageCount >= 5) {
+      const maybeGetSessionId = (pi as { getSessionId?: () => string | undefined }).getSessionId;
+      const existingSessionId = typeof maybeGetSessionId === "function" ? maybeGetSessionId() : undefined;
+      const sessionId = existingSessionId || crypto.randomUUID();
+      const dedupeKey = crypto
+        .createHash("sha256")
+        .update(sessionId + "shutdown" + Date.now().toString())
+        .digest("hex");
+      const messages = JSON.stringify({
+        note: "Session transcript not available at shutdown — use daily log",
+        sessionName,
+        duration,
+        userMessageCount,
+      });
+
+      emitEvent("memory/session.ended", {
+        sessionId,
+        dedupeKey,
+        trigger: "shutdown",
+        messages,
+        messageCount: userMessageCount,
+        userMessageCount,
+        duration: duration * 60,
+        sessionName,
+        filesRead: [],
+        filesModified: [],
+        capturedAt: new Date().toISOString(),
+        schemaVersion: 1,
+      });
+    }
   });
 }
