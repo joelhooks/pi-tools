@@ -202,26 +202,8 @@ Behavioral rules:
 - After 2-3 exchanges when the session topic is clear, use the \`name_session\` tool to give this session a descriptive 3-6 word name.
 `.trim();
 
-// ── Per-turn slog reminder (injected at beginning of every turn) ────
-
-const SLOG_REMINDER = `
-## slog — log what matters
-
-After completing meaningful work this turn, run \`slog write\` to record it. If nothing significant happened, skip it. Categories:
-- **install / remove / update** — tools, services, dependencies
-- **configure** — env vars, plists, service settings, config files
-- **fix** — bug fixes, root causes found, debugging breakthroughs
-- **implement** — features built, functions added, major code changes
-- **todo** — deferred work, known issues to revisit
-- **milestone** — significant accomplishments, pipelines working end-to-end
-- **adr-create / adr-accept / adr-supersede** — architecture decisions
-- **migrate** — breaking changes, data migrations, renames
-- **security** — key rotations, token changes, permission updates
-- **progress** — project status updates, stories completed
-
-Format: \`slog write --action <action> --tool <tool> --detail "<what>" --reason "<why>"\`
-Do NOT slog routine file edits, code changes, or content writes.
-`.trim();
+// slog categories/format reference lives in AGENTS.md (shared across all agents).
+// Per-turn nudge is injected as a hidden message in before_agent_start (recency-biased).
 
 // ── Extension ───────────────────────────────────────────────────────
 
@@ -289,10 +271,11 @@ export default function (pi: ExtensionAPI) {
           : "";
     }
 
-    // Every turn: slog reminder (beginning), lifecycle awareness (middle), timestamp (end)
+    // Every turn: lifecycle awareness + timestamp.
+    // Slog reference lives in AGENTS.md (shared across all agents).
+    // Slog nudge is injected as a message below (recency-biased, pi-only).
     const systemPrompt =
       event.systemPrompt +
-      "\n\n" + SLOG_REMINDER +
       "\n\n" + LIFECYCLE_AWARENESS +
       "\n\nCurrent date and time: " + currentTimestamp();
 
@@ -338,13 +321,19 @@ export default function (pi: ExtensionAPI) {
       sections.push("## Active Vault Projects\n\n" + projects.join("\n"));
     }
 
-    // Check for pending memory proposals via Redis
+    // Check for pending memory proposals via Redis (with timeout — can't hang the gateway)
     let pendingCount = 0;
     try {
-      const redis = new Redis({ host: "localhost", port: 6379 });
+      const redis = new Redis({
+        host: "localhost",
+        port: 6379,
+        connectTimeout: 2000,
+        commandTimeout: 2000,
+        lazyConnect: true,
+      });
       await redis.connect();
       pendingCount = await redis.llen("memory:review:pending");
-      await redis.quit();
+      redis.disconnect();
     } catch {
       // Redis unavailable — briefing continues without proposal count
     }
