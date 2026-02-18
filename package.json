@@ -1,7 +1,7 @@
 {
   "name": "pi-tools",
   "version": "0.4.0",
-  "description": "Joel's pi extensions \u2014 repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search, memory RAG",
+  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search, memory RAG, url-to-markdown",
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -9,14 +9,15 @@
     "pi-coding-agent"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1"
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@sinclair/typebox": "^0.34.33",
+    "ioredis": "^5.6.1"
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-agent-core": "*",
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "@mariozechner/pi-ai": "~0.52.12",
+    "@mariozechner/pi-agent-core": "~0.52.12",
+    "@mariozechner/pi-coding-agent": "~0.52.12",
+    "@mariozechner/pi-tui": "~0.52.12"
   },
   "pi": {
     "extensions": [
@@ -34,7 +35,8 @@
       "./auto-update/auto-update.ts",
       "./web-search/web-search.ts",
       "./inbox-watcher/index.ts",
-      "./memory-rag/index.ts"
+      "./memory-rag/index.ts",
+      "./url-to-markdown/index.ts"
     ]
   }
 }
