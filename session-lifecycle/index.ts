@@ -29,6 +29,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import Redis from "ioredis";
 
 // ── Paths ───────────────────────────────────────────────────────────
 
@@ -245,11 +246,12 @@ export default function (pi: ExtensionAPI) {
         description: "Session name, 3-6 words, specific to the work being done",
       }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const name = params.name.slice(0, 60).trim();
       if (!name) {
         return {
           content: [{ type: "text" as const, text: "Name cannot be empty." }],
+          details: null,
         };
       }
       pi.setSessionName(name);
@@ -260,6 +262,7 @@ export default function (pi: ExtensionAPI) {
             text: `Session named: "${name}"`,
           },
         ],
+        details: null,
       };
     },
   });
@@ -293,9 +296,19 @@ export default function (pi: ExtensionAPI) {
       "\n\n" + LIFECYCLE_AWARENESS +
       "\n\nCurrent date and time: " + currentTimestamp();
 
-    // Session briefing only on first turn
+    // Post-first turn: terse slog nudge as a message for recency bias.
+    // The full SLOG_REMINDER stays in systemPrompt for reference/categories,
+    // but this message sits right next to the user prompt where the LLM sees it.
     if (hasBriefed) {
-      return { systemPrompt };
+      return {
+        systemPrompt,
+        message: {
+          customType: "slog-nudge",
+          content:
+            "🪵 If this turn changes infrastructure (install, configure, fix, implement, migrate, security) → `slog write` before responding. Skip for routine edits, questions, content.",
+          display: false,
+        },
+      };
     }
     hasBriefed = true;
 
@@ -325,15 +338,37 @@ export default function (pi: ExtensionAPI) {
       sections.push("## Active Vault Projects\n\n" + projects.join("\n"));
     }
 
-    if (sections.length === 0) {
+    // Check for pending memory proposals via Redis
+    let pendingCount = 0;
+    try {
+      const redis = new Redis({ host: "localhost", port: 6379 });
+      await redis.connect();
+      pendingCount = await redis.llen("memory:review:pending");
+      await redis.quit();
+    } catch {
+      // Redis unavailable — briefing continues without proposal count
+    }
+
+    const pendingLine =
+      pendingCount > 0
+        ? `📋 ${pendingCount} pending memory proposals — run \`joelclaw review\` or say "review proposals" to see them`
+        : null;
+
+    if (sections.length === 0 && !pendingLine) {
       return { systemPrompt };
     }
+
+    const briefingContent = [
+      "# Session Briefing (auto-injected)",
+      ...sections,
+      ...(pendingLine ? [pendingLine] : []),
+    ].join("\n\n");
 
     return {
       systemPrompt,
       message: {
         customType: "session-briefing",
-        content: "# Session Briefing (auto-injected)\n\n" + sections.join("\n\n"),
+        content: briefingContent,
         display: false,
       },
     };
@@ -380,10 +415,14 @@ export default function (pi: ExtensionAPI) {
       .update(sessionId + "compaction" + Date.now().toString())
       .digest("hex");
     const messages = JSON.stringify(
-      (preparation.messagesToSummarize || []).map((message: { role: string; content: string }) => ({
-        role: message.role,
-        content: message.content,
-      }))
+      (preparation.messagesToSummarize || []).map((message) => {
+        const content = "content" in message
+          ? (typeof (message as { content: unknown }).content === "string"
+            ? (message as { content: string }).content
+            : JSON.stringify((message as { content: unknown }).content))
+          : "";
+        return { role: message.role, content };
+      })
     );
 
     emitEvent("memory/session.compaction.pending", {
