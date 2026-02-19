@@ -287,7 +287,7 @@ export default function (pi: ExtensionAPI) {
         message: {
           customType: "slog-nudge",
           content:
-            "🪵 If this turn changes infrastructure (install, configure, fix, implement, migrate, security) → `slog write` before responding. Skip for routine edits, questions, content.\n📐 joelclaw work should be backed by an ADR. If there isn't one, ask why. Keep ADRs groomed — update status, mark superseded, close what's done.",
+            "🪵 BEFORE your final response: Did you install, configure, fix, remove, or change any tool/service/infra this turn? If yes → `slog write` NOW, not later. The user should never have to remind you.\n📐 joelclaw work should be backed by an ADR. If there isn't one, ask why. Keep ADRs groomed — update status, mark superseded, close what's done.",
           display: false,
         },
       };
