@@ -4,6 +4,8 @@ import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
+// ── Types ──────────────────────────────────────────────
+
 interface TaskItem {
   id: number;
   prompt: string;
@@ -21,8 +23,15 @@ interface TaskItem {
   proc: ChildProcess | null;
 }
 
+// ── State ──────────────────────────────────────────────
+
 let nextTaskId = 1;
 const tasks = new Map<number, TaskItem>();
+let widgetTui: { requestRender: () => void } | null = null;
+let statusTimer: ReturnType<typeof setInterval> | null = null;
+const COMPLETED_LINGER_MS = 15_000;
+
+// ── Formatting ─────────────────────────────────────────
 
 function shortId(sessionId: string | null): string {
   if (!sessionId) return "?";
@@ -42,12 +51,94 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+// ── Widget ─────────────────────────────────────────────
+
+function refreshWidget(): void {
+  widgetTui?.requestRender();
+}
+
+function ensureStatusTimer(): void {
+  if (statusTimer) return;
+  statusTimer = setInterval(() => {
+    const now = Date.now();
+    const hasVisible = [...tasks.values()].some(
+      (t) => t.status === "running" || (t.finishedAt && now - t.finishedAt < COMPLETED_LINGER_MS),
+    );
+    if (hasVisible) {
+      refreshWidget();
+    } else {
+      stopStatusTimer();
+      refreshWidget();
+    }
+  }, 1000);
+}
+
+function stopStatusTimer(): void {
+  if (statusTimer) {
+    clearInterval(statusTimer);
+    statusTimer = null;
+  }
+}
+
+function renderWidget(theme: any): string[] {
+  const now = Date.now();
+  const visible = [...tasks.values()].filter(
+    (t) => t.status === "running" || (t.finishedAt && now - t.finishedAt < COMPLETED_LINGER_MS),
+  );
+  if (visible.length === 0) return [];
+
+  return visible.map((t) => {
+    const icon =
+      t.status === "running"
+        ? theme.fg("warning", "◆")
+        : t.status === "done"
+          ? theme.fg("success", "✓")
+          : t.status === "error"
+            ? theme.fg("error", "✗")
+            : theme.fg("muted", "○");
+    const parts: string[] = [elapsed(t)];
+    if (t.toolCalls.length) parts.push(`${t.toolCalls.length} tool${t.toolCalls.length === 1 ? "" : "s"}`);
+    if (t.usage) parts.push(`↑${fmtTokens(t.usage.input)} ↓${fmtTokens(t.usage.output)}`);
+    if (t.sessionId) parts.push(shortId(t.sessionId));
+    // Show output snippet for completed, prompt snippet for running
+    let snippet: string;
+    if (t.status !== "running" && t.output) {
+      const firstLine = t.output.split("\n").find((l) => l.trim()) || "";
+      snippet = firstLine.length > 50 ? firstLine.slice(0, 47) + "…" : firstLine;
+    } else {
+      snippet = t.prompt.length > 50 ? t.prompt.slice(0, 47) + "…" : t.prompt;
+    }
+    return `${icon} ${theme.fg("text", `#${t.id}`)} ${theme.fg("dim", parts.join(" · "))} ${theme.fg("muted", snippet)}`;
+  });
+}
+
+// ── Prompt wrapping ────────────────────────────────────
+
+const WORKER_PREAMBLE = [
+  "You are a background worker agent. Complete the task efficiently.",
+  "",
+  "Guidelines:",
+  "- Focus on the work. Don't narrate each step.",
+  "- Report key milestones: files created/changed, tests passing/failing, blocking errors.",
+  "- Keep your final summary to 2-3 sentences: what you did and the outcome.",
+  "- If you hit a blocker you can't resolve, describe it clearly and stop.",
+  "",
+  "Task:",
+].join("\n");
+
+function wrapPrompt(prompt: string): string {
+  return WORKER_PREAMBLE + "\n" + prompt;
+}
+
+// ── Process management ─────────────────────────────────
+
 function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
   const proc = spawn("codex", args, {
     cwd: task.cwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
   task.proc = proc;
+  ensureStatusTimer();
 
   let buffer = "";
 
@@ -79,9 +170,12 @@ function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
         }
       } catch {}
     }
+    refreshWidget();
   });
 
-  proc.stderr!.on("data", (chunk: Buffer) => { task.stderr += chunk.toString(); });
+  proc.stderr!.on("data", (chunk: Buffer) => {
+    task.stderr += chunk.toString();
+  });
 
   proc.on("close", (code) => {
     if (buffer.trim()) {
@@ -96,6 +190,7 @@ function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
     task.finishedAt = Date.now();
     task.status = code === 0 ? "done" : "error";
     task.proc = null;
+    refreshWidget();
     onDone();
   });
 
@@ -104,25 +199,51 @@ function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
     task.status = "error";
     task.finishedAt = Date.now();
     task.proc = null;
+    refreshWidget();
     onDone();
   });
 }
 
+// ── Extension ──────────────────────────────────────────
+
 export default function (pi: ExtensionAPI) {
+  // ── Widget lifecycle ──
+
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.setWidget("codex-tasks", (tui, theme) => {
+      widgetTui = tui;
+      return {
+        render: () => renderWidget(theme),
+        invalidate: () => {},
+        dispose: () => {
+          stopStatusTimer();
+          widgetTui = null;
+        },
+      };
+    });
+  });
+
   pi.on("session_shutdown", () => {
+    stopStatusTimer();
     for (const task of tasks.values()) {
-      if (task.proc) { task.proc.kill("SIGTERM"); task.status = "aborted"; }
+      if (task.proc) {
+        task.proc.kill("SIGTERM");
+        task.status = "aborted";
+      }
     }
   });
+
+  // ── codex tool ──
 
   pi.registerTool({
     name: "codex",
     label: "Codex",
     description: [
       "Run a task with codex exec in the background. Returns immediately with a task ID.",
-      "The result is reported back automatically when the task finishes.",
+      "Live status shown in the widget above the editor — no need to poll.",
+      "Spawn multiple tasks in parallel for concurrent work — results batch into one turn.",
       "Use session_id to resume a previous codex session with a follow-up prompt.",
-      "Use codex_tasks to check status of running tasks.",
+      "Use codex_tasks only when you need full output details.",
     ].join(" "),
     parameters: Type.Object({
       prompt: Type.String({ description: "The task/prompt to send to codex" }),
@@ -137,12 +258,24 @@ export default function (pi: ExtensionAPI) {
       const taskId = nextTaskId++;
       const cwd = params.cwd || ctx.cwd;
       const task: TaskItem = {
-        id: taskId, prompt: params.prompt, sessionId: params.session_id || null,
-        cwd, status: "running", startedAt: Date.now(), finishedAt: null,
-        output: "", reasoning: [], toolCalls: [], usage: null, exitCode: null, stderr: "", proc: null,
+        id: taskId,
+        prompt: params.prompt,
+        sessionId: params.session_id || null,
+        cwd,
+        status: "running",
+        startedAt: Date.now(),
+        finishedAt: null,
+        output: "",
+        reasoning: [],
+        toolCalls: [],
+        usage: null,
+        exitCode: null,
+        stderr: "",
+        proc: null,
       };
       tasks.set(taskId, task);
 
+      const wrappedPrompt = wrapPrompt(params.prompt);
       const args: string[] = [];
       if (params.session_id) {
         args.push("exec", "resume", params.session_id, "--json");
@@ -154,43 +287,51 @@ export default function (pi: ExtensionAPI) {
       args.push("--cd", cwd);
       if (params.model) args.push("--model", params.model);
       if (params.sandbox) args.push("--sandbox", params.sandbox);
-      args.push("--", params.prompt);
+      args.push("--", wrappedPrompt);
 
       spawnCodex(task, args, () => {
         const statusLabel = task.status === "done" ? "completed" : "failed";
         const preview = task.output
-          ? (task.output.length > 500 ? task.output.slice(0, 500) + "…" : task.output)
+          ? task.output.length > 500
+            ? task.output.slice(0, 500) + "…"
+            : task.output
           : "(no output)";
         const sessionHint = task.sessionId
           ? `\nCodex session: \`${task.sessionId}\` (use with session_id to continue)`
           : "";
-        const errorHint = task.status === "error" && task.stderr
-          ? `\nError: ${task.stderr.slice(0, 300)}`
-          : "";
+        const errorHint = task.status === "error" && task.stderr ? `\nError: ${task.stderr.slice(0, 300)}` : "";
 
-        pi.sendMessage({
-          customType: "codex-result",
-          content: [
-            `Codex #${task.id} ${statusLabel} (${elapsed(task)})`,
-            errorHint,
-            preview,
-            sessionHint,
-          ].filter(Boolean).join("\n"),
-          display: true,
-          details: {
-            taskId: task.id,
-            sessionId: task.sessionId,
-            status: task.status,
-            output: task.output,
-            toolCalls: task.toolCalls,
-            usage: task.usage,
+        // Batch turn triggering:
+        // - Errors always trigger (needs immediate attention)
+        // - Success while siblings still running: silent (widget shows status)
+        // - Last task completing: trigger once for the whole batch
+        const isError = task.status === "error";
+        const othersRunning = [...tasks.values()].some((t) => t.id !== task.id && t.status === "running");
+        const shouldTrigger = isError || !othersRunning;
+
+        pi.sendMessage(
+          {
+            customType: "codex-result",
+            content: [`Codex #${task.id} ${statusLabel} (${elapsed(task)})`, errorHint, preview, sessionHint]
+              .filter(Boolean)
+              .join("\n"),
+            display: false,
+            details: {
+              taskId: task.id,
+              sessionId: task.sessionId,
+              status: task.status,
+              output: task.output,
+              toolCalls: task.toolCalls,
+              usage: task.usage,
+            },
           },
-        }, { triggerTurn: true, deliverAs: "followUp" });
+          { triggerTurn: shouldTrigger, deliverAs: "followUp" },
+        );
       });
 
       const sessionInfo = params.session_id ? ` (resuming session ${shortId(params.session_id)})` : "";
       return {
-        content: [{ type: "text", text: `Codex task #${taskId} started${sessionInfo}. It will report back when finished. Use codex_tasks to check status.` }],
+        content: [{ type: "text", text: `Codex task #${taskId} started${sessionInfo}. Status in widget.` }],
         details: { taskId, sessionId: params.session_id || null },
       };
     },
@@ -214,50 +355,165 @@ export default function (pi: ExtensionAPI) {
         const txt = result.content[0];
         return new Text(txt?.type === "text" ? txt.text : "", 0, 0);
       }
-      let icon: string;
-      switch (task.status) {
-        case "running": icon = theme.fg("warning", "◆"); break;
-        case "done": icon = theme.fg("success", "✓"); break;
-        case "error": icon = theme.fg("error", "✗"); break;
-        case "aborted": icon = theme.fg("muted", "○"); break;
-        default: icon = theme.fg("warning", "◆");
-      }
+      const icon =
+        task.status === "running"
+          ? theme.fg("warning", "◆")
+          : task.status === "done"
+            ? theme.fg("success", "✓")
+            : task.status === "error"
+              ? theme.fg("error", "✗")
+              : theme.fg("muted", "○");
       const meta: string[] = [task.status, elapsed(task)];
       if (task.sessionId) meta.push(shortId(task.sessionId));
-      let text = `${icon} ${theme.fg("toolTitle", theme.bold(`codex #${task.id}`))}`;
-      text += " " + theme.fg("dim", meta.join(" · "));
-      return new Text(text, 0, 0);
+      return new Text(`${icon} ${theme.fg("toolTitle", theme.bold(`codex #${task.id}`))} ${theme.fg("dim", meta.join(" · "))}`, 0, 0);
     },
   });
+
+  // ── codex_tasks tool ──
 
   pi.registerTool({
     name: "codex_tasks",
     label: "Codex Tasks",
-    description: "List all codex background tasks and their current status.",
-    parameters: Type.Object({ task_id: Type.Optional(Type.Number({ description: "Get details for a specific task" })) }),
+    description: "Get detailed codex task info. Check the widget first — this is for when you need full output or stderr.",
+    parameters: Type.Object({
+      task_id: Type.Optional(Type.Number({ description: "Get details for a specific task" })),
+    }),
+
     async execute(_id, params) {
       if (params.task_id) {
         const task = tasks.get(params.task_id);
-        if (!task) return { content: [{ type: "text", text: `Task #${params.task_id} not found.` }], details: {} };
-        const lines = [`Task #${task.id} — ${task.status} (${elapsed(task)})`, `Prompt: ${task.prompt}`, `Session: ${task.sessionId || "(none)"}`, `CWD: ${task.cwd}`];
-        if (task.toolCalls.length > 0) { lines.push(`Tool calls: ${task.toolCalls.length}`); for (const tc of task.toolCalls.slice(-10)) lines.push(`  → ${tc.type}: ${tc.text.slice(0, 100)}`); }
-        if (task.usage) lines.push(`Usage: ↑${task.usage.input} cached:${task.usage.cached} ↓${task.usage.output}`);
+        if (!task)
+          return {
+            content: [{ type: "text", text: `Task #${params.task_id} not found.` }],
+            details: { mode: "detail", notFound: true },
+          };
+        const lines = [
+          `Task #${task.id} — ${task.status} (${elapsed(task)})`,
+          `Prompt: ${task.prompt}`,
+          `Session: ${task.sessionId || "(none)"}`,
+          `CWD: ${task.cwd}`,
+        ];
+        if (task.toolCalls.length > 0) {
+          lines.push(`Tool calls: ${task.toolCalls.length}`);
+          for (const tc of task.toolCalls.slice(-10)) lines.push(`  → ${tc.type}: ${tc.text.slice(0, 100)}`);
+        }
+        if (task.usage)
+          lines.push(
+            `Usage: ↑${fmtTokens(task.usage.input)} cached:${fmtTokens(task.usage.cached)} ↓${fmtTokens(task.usage.output)}`,
+          );
         if (task.output) lines.push(`\nOutput:\n${task.output}`);
         if (task.stderr) lines.push(`\nStderr:\n${task.stderr.slice(0, 500)}`);
-        return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+        return {
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: {
+            mode: "detail",
+            taskId: task.id,
+            status: task.status,
+            elapsed: elapsed(task),
+            sessionId: task.sessionId,
+            prompt: task.prompt,
+            output: task.output,
+            toolCallCount: task.toolCalls.length,
+            usage: task.usage,
+            stderr: task.stderr,
+          },
+        };
       }
-      if (tasks.size === 0) return { content: [{ type: "text", text: "No codex tasks." }], details: {} };
+
+      if (tasks.size === 0)
+        return { content: [{ type: "text", text: "No codex tasks." }], details: { mode: "list", tasks: [] } };
+
+      const summaries: any[] = [];
       const lines: string[] = [];
       for (const task of tasks.values()) {
-        const icon = task.status === "running" ? "⏳" : task.status === "done" ? "✅" : "❌";
-        const session = task.sessionId ? ` session:${shortId(task.sessionId)}` : "";
+        const icon = task.status === "running" ? "◆" : task.status === "done" ? "✓" : "✗";
+        const session = task.sessionId ? ` ${shortId(task.sessionId)}` : "";
         const preview = task.output ? ` — ${task.output.slice(0, 60).replace(/\n/g, " ")}` : "";
         lines.push(`${icon} #${task.id} [${task.status}] ${elapsed(task)}${session}${preview}`);
-        lines.push(`   ${task.prompt.slice(0, 80)}`);
+        summaries.push({
+          id: task.id,
+          status: task.status,
+          elapsed: elapsed(task),
+          sessionId: task.sessionId,
+          prompt: task.prompt,
+          outputPreview: task.output?.slice(0, 100)?.replace(/\n/g, " ") || "",
+        });
       }
-      return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+      return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "list", tasks: summaries } };
+    },
+
+    renderCall(args, theme) {
+      if (args.task_id) {
+        return new Text(theme.fg("toolTitle", theme.bold("codex_tasks")) + " " + theme.fg("dim", `#${args.task_id}`), 0, 0);
+      }
+      return new Text(theme.fg("toolTitle", theme.bold("codex_tasks")), 0, 0);
+    },
+
+    renderResult(result, { expanded }, theme) {
+      const d = result.details as any;
+      if (!d) {
+        const txt = result.content[0];
+        return new Text(txt?.type === "text" ? txt.text : "", 0, 0);
+      }
+
+      // Single task detail
+      if (d.mode === "detail") {
+        if (d.notFound) return new Text(theme.fg("error", "✗ Task not found"), 0, 0);
+
+        const icon = d.status === "done" ? theme.fg("success", "✓") : d.status === "running" ? theme.fg("warning", "◆") : theme.fg("error", "✗");
+        const meta: string[] = [d.status, d.elapsed];
+        if (d.sessionId) meta.push(shortId(d.sessionId));
+        if (d.toolCallCount > 0) meta.push(`${d.toolCallCount} tools`);
+        if (d.usage) meta.push(`↑${fmtTokens(d.usage.input)} ↓${fmtTokens(d.usage.output)}`);
+
+        let text = `${icon} ${theme.fg("toolTitle", theme.bold(`#${d.taskId}`))} ${theme.fg("dim", meta.join(" · "))}`;
+
+        if (expanded && d.output) {
+          const outputLines = d.output.split("\n").slice(0, 20);
+          text += "\n" + theme.fg("dim", "───");
+          text += "\n" + outputLines.map((l: string) => `  ${l}`).join("\n");
+          if (d.output.split("\n").length > 20) text += "\n" + theme.fg("dim", `… ${d.output.split("\n").length - 20} more`);
+        } else {
+          const snip = d.prompt.length > 80 ? d.prompt.slice(0, 77) + "…" : d.prompt;
+          text += "\n" + theme.fg("muted", `  ${snip}`);
+        }
+        return new Text(text, 0, 0);
+      }
+
+      // Task list
+      if (d.mode === "list") {
+        if (!d.tasks?.length) return new Text(theme.fg("dim", "No codex tasks."), 0, 0);
+
+        const counts: Record<string, number> = {};
+        for (const t of d.tasks) counts[t.status] = (counts[t.status] || 0) + 1;
+        const parts: string[] = [];
+        if (counts.running) parts.push(theme.fg("warning", `${counts.running} running`));
+        if (counts.done) parts.push(theme.fg("success", `${counts.done} done`));
+        if (counts.error) parts.push(theme.fg("error", `${counts.error} failed`));
+
+        let text =
+          theme.fg("toolTitle", theme.bold("codex_tasks")) +
+          " " +
+          theme.fg("dim", `${d.tasks.length} task${d.tasks.length === 1 ? "" : "s"}`) +
+          "  " +
+          parts.join(theme.fg("dim", " · "));
+
+        if (expanded) {
+          for (const t of d.tasks) {
+            const icon = t.status === "running" ? theme.fg("warning", "◆") : t.status === "done" ? theme.fg("success", "✓") : theme.fg("error", "✗");
+            const snip = t.prompt.length > 60 ? t.prompt.slice(0, 57) + "…" : t.prompt;
+            text += `\n  ${icon} #${t.id} ${theme.fg("dim", t.elapsed)} ${theme.fg("muted", snip)}`;
+          }
+        }
+        return new Text(text, 0, 0);
+      }
+
+      const txt = result.content[0];
+      return new Text(txt?.type === "text" ? txt.text : "", 0, 0);
     },
   });
+
+  // ── Completion message renderer ──
 
   pi.registerMessageRenderer<any>("codex-result", (message, { expanded }, theme) => {
     const details = message.details;
@@ -266,7 +522,6 @@ export default function (pi: ExtensionAPI) {
     const isDone = details.status === "done";
     const icon = isDone ? theme.fg("success", "✓") : theme.fg("error", "✗");
 
-    // ── Header: status + inline metadata (always 1 line) ──
     let header = `${icon} ${theme.fg("toolTitle", theme.bold(`Codex #${details.taskId}`))}`;
     const meta: string[] = [];
     if (details.toolCalls?.length > 0) meta.push(`${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
@@ -276,37 +531,33 @@ export default function (pi: ExtensionAPI) {
     container.addChild(new Text(header, 1, 0));
 
     if (expanded) {
-      // ── Tool calls ──
       if (details.toolCalls?.length > 0) {
         container.addChild(new Spacer(1));
         for (const tc of details.toolCalls.slice(-15)) {
-          container.addChild(new Text(
-            theme.fg("dim", "  →") + " " + theme.fg("accent", tc.type) + " " + theme.fg("dim", tc.text.slice(0, 70)),
-            1, 0,
-          ));
+          container.addChild(
+            new Text(theme.fg("dim", "  →") + " " + theme.fg("accent", tc.type) + " " + theme.fg("dim", tc.text.slice(0, 70)), 1, 0),
+          );
         }
         if (details.toolCalls.length > 15) {
           container.addChild(new Text(theme.fg("dim", `    … ${details.toolCalls.length - 15} more`), 1, 0));
         }
       }
-
-      // ── Full output ──
       if (details.output) {
         container.addChild(new Spacer(1));
         container.addChild(new Markdown(details.output, 1, 0, getMarkdownTheme()));
       }
-
-      // ── Session ID (copyable) ──
       if (details.sessionId) {
         container.addChild(new Spacer(1));
         container.addChild(new Text(theme.fg("dim", `session ${details.sessionId}`), 1, 0));
       }
     } else {
-      // ── Collapsed: stable 1-2 line preview (no extra metadata lines) ──
       const output = details.output?.trim();
       if (output) {
-        const previewLines = output.split("\n").filter((l: string) => l.trim()).slice(0, 2);
-        container.addChild(new Text(theme.fg("toolOutput", previewLines.join("\n")), 1, 0));
+        const previewLines = output
+          .split("\n")
+          .filter((l: string) => l.trim())
+          .slice(0, 2);
+        container.addChild(new Text(previewLines.join("\n"), 1, 0));
       } else {
         container.addChild(new Text(theme.fg("dim", "(no output)"), 1, 0));
       }
