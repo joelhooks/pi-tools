@@ -9,7 +9,7 @@ const AUTOPSY_DIR = join(homedir(), ".repo-autopsy");
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const lastFetchTime = new Map<string, number>();
 
-function parseRepoUrl(input: string): { owner: string; repo: string; url: string } | null {
+function parseRepoUrl(input: string): { owner: string; repo: string; httpsUrl: string; sshUrl: string } | null {
   let owner: string, repo: string;
   if (input.includes("git@")) {
     const match = input.match(/git@github\.com:([^\/]+)\/(.+?)(?:\.git)?$/);
@@ -21,21 +21,38 @@ function parseRepoUrl(input: string): { owner: string; repo: string; url: string
     [, owner, repo] = match;
     repo = repo.replace(/\.git$/, "");
   }
-  return { owner, repo, url: `https://github.com/${owner}/${repo}.git` };
+  return {
+    owner,
+    repo,
+    httpsUrl: `https://github.com/${owner}/${repo}.git`,
+    sshUrl: `git@github.com:${owner}/${repo}.git`,
+  };
 }
 
 function sh(cmd: string, cwd?: string): string {
   try {
-    return execSync(cmd, { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, timeout: 60000 }).trim();
+    return execSync(cmd, {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    }).trim();
   } catch (e: any) {
     return e.stdout?.trim() || e.message || "command failed";
   }
 }
 
+function gitClone(url: string, dest: string): boolean {
+  const out = sh(`git clone --depth 100 ${url} ${dest}`);
+  return existsSync(join(dest, ".git"));
+}
+
 function ensureRepo(repoInput: string, forceRefresh = false): { path: string; owner: string; repo: string; cached: boolean } | string {
   const parsed = parseRepoUrl(repoInput);
   if (!parsed) return "Invalid repo format. Use: owner/repo or GitHub URL";
-  const { owner, repo, url } = parsed;
+  const { owner, repo, httpsUrl, sshUrl } = parsed;
   const repoPath = join(AUTOPSY_DIR, owner, repo);
   const cacheKey = `${owner}/${repo}`;
 
@@ -46,17 +63,18 @@ function ensureRepo(repoInput: string, forceRefresh = false): { path: string; ow
     if (!forceRefresh && Date.now() - lastFetch < CACHE_TTL_MS) {
       return { path: repoPath, owner, repo, cached: true };
     }
-    try {
-      sh(`git fetch --all --prune`, repoPath);
-      sh(`git reset --hard origin/HEAD`, repoPath);
-      lastFetchTime.set(cacheKey, Date.now());
-    } catch {
-      sh(`rm -rf ${repoPath}`);
-      sh(`git clone --depth 100 ${url} ${repoPath}`);
-      lastFetchTime.set(cacheKey, Date.now());
-    }
+    sh(`git fetch --all --prune`, repoPath);
+    sh(`git reset --hard origin/HEAD`, repoPath);
+    lastFetchTime.set(cacheKey, Date.now());
   } else {
-    sh(`git clone --depth 100 ${url} ${repoPath}`);
+    // Try HTTPS first (works for public repos without auth), fall back to SSH
+    if (!gitClone(httpsUrl, repoPath)) {
+      sh(`rm -rf ${repoPath}`);
+      if (!gitClone(sshUrl, repoPath)) {
+        sh(`rm -rf ${repoPath}`);
+        return `Failed to clone ${owner}/${repo} via HTTPS or SSH`;
+      }
+    }
     lastFetchTime.set(cacheKey, Date.now());
   }
   return { path: repoPath, owner, repo, cached: false };
