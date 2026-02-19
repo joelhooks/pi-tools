@@ -33,7 +33,7 @@ function getApiKey(): string | undefined {
 	if (cachedKey && Date.now() < keyExpiry) return cachedKey;
 
 	try {
-		const result = execSync("secrets lease brave_api_key --ttl 1h --raw 2>/dev/null", {
+		const result = execSync("secrets lease brave_api_key --ttl 1h 2>/dev/null", {
 			encoding: "utf-8",
 			timeout: 5000,
 		}).trim();
