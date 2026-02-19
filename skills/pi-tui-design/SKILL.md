@@ -329,14 +329,25 @@ ctx.ui.setFooter((tui, theme, footerData) => ({
 | Generic spinner for all loading states | Context-appropriate progress (bar, percentage, step count) |
 | Fixed-width layouts | Responsive to `width` param, `minWidth` guards |
 
-## Patterns to Steal
+## Copy-Paste Examples
 
-The pi repo examples demonstrate these well:
+See [references/examples.md](references/examples.md) for complete, self-contained component implementations:
 
-- **snake.ts**: Full game loop, keyboard input, box-drawing borders, score display, state management, session persistence via `pi.appendEntry()`
-- **space-invaders.ts**: Kitty key release events (`wantsKeyRelease`), multi-entity rendering, collision detection in a character grid
-- **overlay-qa-tests.ts**: All 9 anchor positions, responsive visibility, animation at ~30 FPS, stacking, margin/offset
-- **preset.ts**: SelectList with DynamicBorder framing — the standard dialog pattern
+- **Selection dialog** — SelectList + DynamicBorder + keyboard hints
+- **Status dashboard** — Multi-section box-drawing layout, aligned columns, semantic color
+- **Progress tracker** — Animated braille bar, timer lifecycle, dispose cleanup
+- **Data table** — Scrollable rows, column alignment, row highlighting
+- **Persistent widget** — Above-editor health indicator, single-line compact
+- **Tool renderer** — renderCall/renderResult with expandable detail
+- **Overlay panel** — Side panel, responsive visibility, anchor positioning
+
+## Upstream Examples
+
+The pi repo extension examples demonstrate more patterns:
+
+- **snake.ts**: Full game loop, box-drawing borders, session persistence via `pi.appendEntry()`
+- **space-invaders.ts**: Kitty key release events (`wantsKeyRelease`), multi-entity rendering
+- **overlay-qa-tests.ts**: All 9 anchor positions, responsive visibility, animation at ~30 FPS
+- **preset.ts**: SelectList with DynamicBorder — the standard dialog pattern
 - **plan-mode**: setStatus + setWidget for persistent mode indicators
-- **modal-editor.ts**: CustomEditor extension for vim-like modal editing
 - **todo.ts**: Custom tool rendering with renderCall/renderResult
