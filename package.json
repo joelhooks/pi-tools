@@ -36,7 +36,8 @@
       "./web-search/web-search.ts",
       "./inbox-watcher/index.ts",
       "./memory-rag/index.ts",
-      "./url-to-markdown/index.ts"
+      "./url-to-markdown/index.ts",
+      "./bash-timeout/index.ts"
     ]
   }
 }
