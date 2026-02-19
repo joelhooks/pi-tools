@@ -29,7 +29,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import Redis from "ioredis";
 
 // ── Paths ───────────────────────────────────────────────────────────
 
@@ -322,8 +321,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     // Check for pending memory proposals via Redis (with timeout — can't hang the gateway)
+    // Dynamic import: ioredis may not be installed — extension loads fine either way.
     let pendingCount = 0;
     try {
+      const { default: Redis } = await import("ioredis");
       const redis = new Redis({
         host: "localhost",
         port: 6379,
@@ -335,7 +336,7 @@ export default function (pi: ExtensionAPI) {
       pendingCount = await redis.llen("memory:review:pending");
       redis.disconnect();
     } catch {
-      // Redis unavailable — briefing continues without proposal count
+      // Redis or ioredis unavailable — briefing continues without proposal count
     }
 
     const pendingLine =

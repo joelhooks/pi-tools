@@ -103,39 +103,53 @@ export default function memoryRag(pi: ExtensionAPI) {
 
   // ── recall tool — on-demand semantic search ──────────────────
 
-  pi.addTool(
-    "recall",
-    "Search agent memory (Qdrant) for observations relevant to a query. Returns scored results from 520+ session observations. Use when you need context about past debugging, decisions, or system state that isn't in MEMORY.md.",
-    {
+  pi.registerTool({
+    name: "recall",
+    label: "Recall",
+    description:
+      "Search agent memory (Qdrant) for observations relevant to a query. Returns scored results from 520+ session observations. Use when you need context about past debugging, decisions, or system state that isn't in MEMORY.md.",
+    parameters: Type.Object({
       query: Type.String({ description: "Natural language search query" }),
       limit: Type.Optional(Type.Number({ description: "Max results (default: 5)", default: 5 })),
       minScore: Type.Optional(Type.Number({ description: "Minimum relevance score 0-1 (default: 0.25)", default: 0.25 })),
-    },
-    async (args) => {
-      const limit = args.limit ?? 5;
-      const minScore = args.minScore ?? 0.25;
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const limit = params.limit ?? 5;
+      const minScore = params.minScore ?? 0.25;
 
-      const hits = recall(args.query, limit, minScore);
+      const hits = recall(params.query, limit, minScore);
 
       if (hits.length === 0) {
         return {
-          query: args.query,
-          hits: [],
-          count: 0,
-          note: "No observations matched. Try broader terms or lower --min-score.",
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              query: params.query,
+              hits: [],
+              count: 0,
+              note: "No observations matched. Try broader terms or lower --min-score.",
+            }, null, 2),
+          }],
+          details: null,
         };
       }
 
       return {
-        query: args.query,
-        hits: hits.map(h => ({
-          score: h.score,
-          observation: h.observation,
-          type: h.type,
-          timestamp: h.timestamp,
-        })),
-        count: hits.length,
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            query: params.query,
+            hits: hits.map(h => ({
+              score: h.score,
+              observation: h.observation,
+              type: h.type,
+              timestamp: h.timestamp,
+            })),
+            count: hits.length,
+          }, null, 2),
+        }],
+        details: null,
       };
-    }
-  );
+    },
+  });
 }
