@@ -3,8 +3,8 @@
  *
  * Press 1-4 to answer. Option 4 is always "Other (type your response)".
  * Adapts rendering to terminal width:
- *   - Full (≥60 cols): bars, progress, recommendations, wrapping
- *   - Compact (<50 cols): stripped chrome, short prefixes, no hints
+ *   - Full (≥50 cols): bars, progress, recommendations, wrapping
+ *   - Compact (35-49 cols): stripped chrome, short prefixes, no hints
  *   - Minimal (<35 cols): flat numbered list, zero decoration
  *
  * Wire protocol: NDJSON over Redis gateway for Telegram/web/native/voice.
@@ -14,7 +14,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { getTUILayout, type TUILayout, type MCQQuestionDef, getOptionLabel } from "./protocol.js";
+import { getTUILayout, type TUILayout, type MCQQuestionDef } from "./protocol.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -25,6 +25,10 @@ interface MCQQuestion {
 	context?: string;
 	recommended?: number;
 	recommendedReason?: string;
+	/** "strong" pre-selects the recommended option, "slight" just badges it */
+	conviction?: "strong" | "slight";
+	/** "critical" = visually prominent, "minor" = compact */
+	weight?: "critical" | "minor";
 }
 
 interface MCQAnswer {
@@ -56,6 +60,12 @@ const MCQQuestionSchema = Type.Object({
 	),
 	recommendedReason: Type.Optional(
 		Type.String({ description: "Brief reasoning for the recommendation (1-2 sentences)." }),
+	),
+	conviction: Type.Optional(
+		Type.String({ description: '"strong" pre-selects the recommended option, "slight" just shows a badge without pre-selecting. Default: strong.' }),
+	),
+	weight: Type.Optional(
+		Type.String({ description: '"critical" for key decisions (visually prominent), "minor" for low-stakes (compact). Default: normal.' }),
 	),
 });
 
@@ -129,6 +139,8 @@ export default function mcq(pi: ExtensionAPI) {
 			const questions: MCQQuestion[] = params.questions.map((q) => ({
 				...q,
 				options: q.options.slice(0, 3),
+				conviction: (q as any).conviction as MCQQuestion["conviction"],
+				weight: (q as any).weight as MCQQuestion["weight"],
 			}));
 
 			// Hide the working spinner while custom UI is showing
@@ -142,6 +154,7 @@ export default function mcq(pi: ExtensionAPI) {
 				let flashIndex: number | null = null;
 				let lastEscTime = 0;
 				let cachedLines: string[] | undefined;
+				let cachedWidth: number | undefined;
 				let highlightIndex = 0;
 				const answers = new Map<number, MCQAnswer>();
 
@@ -170,6 +183,7 @@ export default function mcq(pi: ExtensionAPI) {
 				// ── Helpers ──
 				function refresh() {
 					cachedLines = undefined;
+					cachedWidth = undefined;
 					tui.requestRender();
 				}
 
@@ -177,7 +191,9 @@ export default function mcq(pi: ExtensionAPI) {
 					if (currentQ < questions.length - 1) {
 						currentQ++;
 						const nextQ = questions[currentQ];
-						highlightIndex = nextQ.recommended ? nextQ.recommended - 1 : 0;
+						// "strong" (default) pre-focuses recommended; "slight" just badges it
+						const shouldPreselect = nextQ.recommended && nextQ.conviction !== "slight";
+						highlightIndex = shouldPreselect ? nextQ.recommended! - 1 : 0;
 					} else {
 						showSummary = true;
 					}
@@ -296,7 +312,8 @@ export default function mcq(pi: ExtensionAPI) {
 
 				// ── Render ──
 				function render(width: number): string[] {
-					if (cachedLines) return cachedLines;
+					if (cachedLines && cachedWidth === width) return cachedLines;
+					cachedWidth = width;
 					const layout = getTUILayout(width);
 
 					if (layout === "minimal") {
@@ -321,6 +338,8 @@ export default function mcq(pi: ExtensionAPI) {
 							if (a) {
 								const val = a.isCustom ? a.answer : `${a.selected}. ${a.answer}`;
 								add(`${theme.fg("success", "✓")} ${a.id}: ${val}`);
+							} else {
+								add(`${theme.fg("warning", "○")} ${questions[i].id}: ${theme.fg("dim", "–")}`);
 							}
 						}
 						add(theme.fg("dim", "Enter=ok Esc=cancel"));
@@ -330,27 +349,47 @@ export default function mcq(pi: ExtensionAPI) {
 					const q = questions[currentQ];
 					const step = `${currentQ + 1}/${questions.length}`;
 					add(theme.fg("accent", `${step} ${title}`));
-					// Wrap question text
 					const qWrapped = wrapTextWithAnsi(q.question, width);
 					for (const l of qWrapped) add(l);
 
 					for (let i = 0; i < q.options.length; i++) {
 						const num = i + 1;
+						const existing = answers.get(currentQ);
+						const isPrev = existing && !existing.isCustom && existing.selected === num;
 						const isHl = highlightIndex === i;
 						const isFlash = flashIndex === num;
 						const isRec = q.recommended === num;
-						const mark = isFlash ? theme.fg("success", "✓") : isHl ? theme.fg("accent", "▸") : isRec ? theme.fg("warning", "★") : " ";
+						const mark = isFlash ? theme.fg("success", "✓")
+							: isPrev ? theme.fg("success", "✓")
+							: isHl ? theme.fg("accent", "▸")
+							: isRec ? theme.fg("warning", "★")
+							: " ";
 						const optWrapped = wrapTextWithAnsi(q.options[i], width - 4);
 						for (let j = 0; j < optWrapped.length; j++) {
 							add(j === 0 ? `${mark}${num} ${optWrapped[j]}` : `   ${optWrapped[j]}`);
 						}
 					}
 					const otherNum = q.options.length + 1;
+					const existing = answers.get(currentQ);
+					const isOtherPrev = existing?.isCustom;
 					const isOtherHl = highlightIndex === q.options.length;
-					add(`${isOtherHl ? theme.fg("accent", "▸") : " "}${otherNum} Other`);
+					if (isOtherPrev) {
+						add(`${theme.fg("success", "✓")}${otherNum} ${existing!.answer}`);
+					} else {
+						add(`${isOtherHl ? theme.fg("accent", "▸") : " "}${otherNum} Other`);
+					}
 
 					if (inputMode) {
 						for (const line of editor.render(width - 1)) add(` ${line}`);
+					}
+
+					// Truncated rec reason — one line max
+					if (q.recommended && q.recommendedReason && !inputMode) {
+						const maxLen = width - 3;
+						const reason = q.recommendedReason.length > maxLen
+							? q.recommendedReason.slice(0, maxLen - 3) + "..."
+							: q.recommendedReason;
+						add(theme.fg("dim", `💡${reason}`));
 					}
 
 					return lines;
@@ -596,7 +635,7 @@ export default function mcq(pi: ExtensionAPI) {
 
 				return {
 					render,
-					invalidate: () => { cachedLines = undefined; },
+					invalidate: () => { cachedLines = undefined; cachedWidth = undefined; },
 					handleInput,
 				};
 			});

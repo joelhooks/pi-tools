@@ -116,8 +116,27 @@ export function serialize(event: MCQEvent): string {
 export function parse(line: string): MCQEvent | null {
 	try {
 		const obj = JSON.parse(line);
-		if (obj?.type?.startsWith("mcq.")) return obj as MCQEvent;
-		return null;
+		if (!obj?.type?.startsWith("mcq.") || !obj.session || !obj.ts) return null;
+
+		switch (obj.type) {
+			case "mcq.question":
+				if (!Array.isArray(obj.questions)) return null;
+				for (const q of obj.questions) {
+					if (!q.id || !q.question || !Array.isArray(q.options)) return null;
+				}
+				return obj as MCQQuestionEvent;
+			case "mcq.answer":
+				if (!obj.id || typeof obj.selected !== "number" || typeof obj.answer !== "string") return null;
+				return obj as MCQAnswerEvent;
+			case "mcq.cancel":
+				if (!obj.reason) return null;
+				return obj as MCQCancelEvent;
+			case "mcq.complete":
+				if (!Array.isArray(obj.answers)) return null;
+				return obj as MCQCompleteEvent;
+			default:
+				return null;
+		}
 	} catch {
 		return null;
 	}
