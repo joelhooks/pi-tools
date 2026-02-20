@@ -16,6 +16,39 @@ import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visib
 import { Type } from "@sinclair/typebox";
 import { getTUILayout, type TUILayout, type MCQQuestionDef } from "./protocol.js";
 
+// ── Width-aware prompt guidance ──────────────────────────────────────
+
+function getCompactnessGuidance(): string {
+	const cols = process.stdout.columns || 80;
+	const layout = getTUILayout(cols);
+
+	if (layout === "minimal") {
+		return (
+			"\n\n**NARROW TERMINAL (< 35 cols) — BE ULTRA-CONCISE:**\n" +
+			"- Questions: max 8 words. No preamble.\n" +
+			"- Options: max 4-5 words each. Use fragments, not sentences.\n" +
+			"- IDs: 3-5 chars (e.g. 'lang', 'db', 'ui').\n" +
+			"- Context: omit entirely or max 6 words.\n" +
+			"- recommendedReason: max 8 words.\n" +
+			"- Example option: 'SQLite, local, zero-config' not 'Use SQLite for a lightweight local database with zero configuration'"
+		);
+	}
+
+	if (layout === "compact") {
+		return (
+			"\n\n**COMPACT TERMINAL (35-49 cols) — BE CONCISE:**\n" +
+			"- Questions: max 12 words. Direct and punchy.\n" +
+			"- Options: max 8-10 words each. Lead with the key noun/verb.\n" +
+			"- Context: max 10 words or omit.\n" +
+			"- recommendedReason: max 15 words, one sentence.\n" +
+			"- Example option: 'SQLite — local, zero-config' not 'Use SQLite for a lightweight local database with zero configuration required'"
+		);
+	}
+
+	// full layout — no extra constraints
+	return "";
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 interface MCQQuestion {
@@ -90,6 +123,7 @@ export default function mcq(pi: ExtensionAPI) {
 	// ── System prompt nudge ──────────────────────────────────────────
 
 	pi.on("before_agent_start", async (event) => {
+		const compactness = getCompactnessGuidance();
 		return {
 			systemPrompt:
 				event.systemPrompt +
@@ -107,7 +141,8 @@ export default function mcq(pi: ExtensionAPI) {
 				"**Recommend an option when you have a informed opinion.** Set `recommended` (1-indexed option number) " +
 				"and `recommendedReason` (1-2 sentence explanation) on each question where you have a preference. " +
 				"This is important — it shows a ★ badge and pre-selects the option so the user can just hit Enter to accept. " +
-				"Omit only when all options are genuinely equal.",
+				"Omit only when all options are genuinely equal." +
+				compactness,
 		};
 	});
 
