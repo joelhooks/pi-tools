@@ -79,8 +79,9 @@ const MCQParams = Type.Object({
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function progressBar(current: number, total: number, width: number, fg: (c: any, s: string) => string): string {
-	const filled = Math.round((current / total) * width);
-	return fg("accent", "█".repeat(filled)) + fg("dim", "░".repeat(width - filled));
+	const w = Math.max(0, width);
+	const filled = Math.round((current / total) * w);
+	return fg("accent", "█".repeat(filled)) + fg("dim", "░".repeat(Math.max(0, w - filled)));
 }
 
 // ── Extension ────────────────────────────────────────────────────────
@@ -317,7 +318,8 @@ export default function mcq(pi: ExtensionAPI) {
 				}
 
 				// ── Render ──
-				function render(width: number): string[] {
+				function render(rawWidth: number): string[] {
+					const width = Math.max(20, rawWidth);
 					if (cachedLines && cachedWidth === width) return cachedLines;
 					cachedWidth = width;
 					const layout = getTUILayout(width);
@@ -353,8 +355,9 @@ export default function mcq(pi: ExtensionAPI) {
 					}
 
 					const q = questions[currentQ];
-					const step = `${currentQ + 1}/${questions.length}`;
-					add(theme.fg("accent", `${step} ${title}`));
+					if (questions.length > 1) {
+						add(theme.fg("accent", `${currentQ + 1}/${questions.length} ${title}`));
+					}
 					const qWrapped = wrapTextWithAnsi(q.question, width);
 					for (const l of qWrapped) add(l);
 
@@ -432,10 +435,11 @@ export default function mcq(pi: ExtensionAPI) {
 					}
 
 					const q = questions[currentQ];
-					const step = `${currentQ + 1}/${questions.length}`;
 
-					// Header: step + title, one line
-					add(`${theme.fg("accent", theme.bold(step))} ${theme.fg("muted", title)}`);
+					// Header: step + title, skip step counter for single question
+					if (questions.length > 1) {
+						add(`${theme.fg("accent", theme.bold(`${currentQ + 1}/${questions.length}`))} ${theme.fg("muted", title)}`);
+					}
 
 					// Question
 					addWrapped(" ", theme.fg("text", q.question));
@@ -485,7 +489,7 @@ export default function mcq(pi: ExtensionAPI) {
 						}
 
 						// Recommendation reason — compact: one line max
-						if (q.recommended && q.recommendedReason && !isFlash) {
+						if (q.recommended && q.recommendedReason && flashIndex === null) {
 							const reason = q.recommendedReason.length > width - 4
 								? q.recommendedReason.slice(0, width - 7) + "..."
 								: q.recommendedReason;
@@ -540,13 +544,17 @@ export default function mcq(pi: ExtensionAPI) {
 
 					// ─── Question ────────────────────────────────
 					const q = questions[currentQ];
-					const step = `${currentQ + 1}/${questions.length}`;
-					const barWidth = Math.min(20, width - 4);
 
 					add(bar);
-					add(
-						` ${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", step)}  ${progressBar(currentQ + 1, questions.length, barWidth, theme.fg.bind(theme))}`,
-					);
+					if (questions.length > 1) {
+						const step = `${currentQ + 1}/${questions.length}`;
+						const barWidth = Math.min(20, width - 4);
+						add(
+							` ${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", step)}  ${progressBar(currentQ + 1, questions.length, barWidth, theme.fg.bind(theme))}`,
+						);
+					} else {
+						add(` ${theme.fg("accent", theme.bold(title))}`);
+					}
 					add("");
 					addWrapped(" ", theme.fg("text", q.question));
 					if (q.context) {
