@@ -1,16 +1,20 @@
 /**
- * MCQ (Multiple Choice Questions) — rapid intent design tool
+ * MCQ (Multiple Choice Questions) — adaptive multi-channel intent tool
  *
  * Press 1-4 to answer. Option 4 is always "Other (type your response)".
- * Designed for fast requirements gathering before implementation.
+ * Adapts rendering to terminal width:
+ *   - Full (≥60 cols): bars, progress, recommendations, wrapping
+ *   - Compact (<50 cols): stripped chrome, short prefixes, no hints
+ *   - Minimal (<35 cols): flat numbered list, zero decoration
  *
- * Tool: mcq — LLM presents questions, user taps number keys
- * Command: /design <topic> — kicks off an MCQ-driven design flow
+ * Wire protocol: NDJSON over Redis gateway for Telegram/web/native/voice.
+ * See protocol.ts for the shared schema.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { getTUILayout, type TUILayout, type MCQQuestionDef, getOptionLabel } from "./protocol.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -138,7 +142,7 @@ export default function mcq(pi: ExtensionAPI) {
 				let flashIndex: number | null = null;
 				let lastEscTime = 0;
 				let cachedLines: string[] | undefined;
-				let highlightIndex = 0; // 0-based index into options + "Other"
+				let highlightIndex = 0;
 				const answers = new Map<number, MCQAnswer>();
 
 				// ── Editor for "Other" ──
@@ -219,7 +223,6 @@ export default function mcq(pi: ExtensionAPI) {
 
 				// ── Input handling ──
 				function handleInput(data: string) {
-					// Editor mode
 					if (inputMode) {
 						if (matchesKey(data, Key.escape)) {
 							inputMode = false;
@@ -232,16 +235,9 @@ export default function mcq(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Summary view
 					if (showSummary) {
-						if (matchesKey(data, Key.enter)) {
-							submit(false);
-							return;
-						}
-						if (matchesKey(data, Key.escape)) {
-							submit(true);
-							return;
-						}
+						if (matchesKey(data, Key.enter)) { submit(false); return; }
+						if (matchesKey(data, Key.escape)) { submit(true); return; }
 						if (matchesKey(data, Key.left) || matchesKey(data, Key.up)) {
 							showSummary = false;
 							currentQ = questions.length - 1;
@@ -260,29 +256,19 @@ export default function mcq(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Question view — Esc: double-tap cancels, single goes back
+					// Esc: double-tap cancels, single goes back
 					if (matchesKey(data, Key.escape)) {
 						const now = Date.now();
-						if (now - lastEscTime < 400) {
-							// Double-Esc → cancel entire flow
-							submit(true);
-							return;
-						}
+						if (now - lastEscTime < 400) { submit(true); return; }
 						lastEscTime = now;
-
-						if (currentQ > 0) {
-							currentQ--;
-							highlightIndex = 0;
-							refresh();
-						}
-						// On Q1, single Esc does nothing (need double to cancel)
+						if (currentQ > 0) { currentQ--; highlightIndex = 0; refresh(); }
 						return;
 					}
 
 					// Arrow navigation
 					if (matchesKey(data, Key.up) || matchesKey(data, Key.left)) {
 						const q = questions[currentQ];
-						const maxIdx = q.options.length; // 0..options.length (includes "Other")
+						const maxIdx = q.options.length;
 						highlightIndex = (highlightIndex - 1 + maxIdx + 1) % (maxIdx + 1);
 						refresh();
 						return;
@@ -295,13 +281,9 @@ export default function mcq(pi: ExtensionAPI) {
 						return;
 					}
 
-					// Enter confirms highlighted option
-					if (matchesKey(data, Key.enter)) {
-						selectOption(highlightIndex + 1);
-						return;
-					}
+					if (matchesKey(data, Key.enter)) { selectOption(highlightIndex + 1); return; }
 
-					// Number keys for instant selection
+					// Number keys
 					if (flashIndex !== null) return;
 					const n = parseInt(data);
 					const q = questions[currentQ];
@@ -315,18 +297,168 @@ export default function mcq(pi: ExtensionAPI) {
 				// ── Render ──
 				function render(width: number): string[] {
 					if (cachedLines) return cachedLines;
+					const layout = getTUILayout(width);
 
+					if (layout === "minimal") {
+						cachedLines = renderMinimal(width);
+					} else if (layout === "compact") {
+						cachedLines = renderCompact(width);
+					} else {
+						cachedLines = renderFull(width);
+					}
+					return cachedLines;
+				}
+
+				// ── Minimal renderer (<35 cols) ──────────────────
+				function renderMinimal(width: number): string[] {
 					const lines: string[] = [];
 					const add = (s: string) => lines.push(truncateToWidth(s, width));
-					/** Wrap text with a styled prefix; continuation lines get indented to align. */
+
+					if (showSummary) {
+						add(theme.fg("accent", theme.bold(`✓ ${title}`)));
+						for (let i = 0; i < questions.length; i++) {
+							const a = answers.get(i);
+							if (a) {
+								const val = a.isCustom ? a.answer : `${a.selected}. ${a.answer}`;
+								add(`${theme.fg("success", "✓")} ${a.id}: ${val}`);
+							}
+						}
+						add(theme.fg("dim", "Enter=ok Esc=cancel"));
+						return lines;
+					}
+
+					const q = questions[currentQ];
+					const step = `${currentQ + 1}/${questions.length}`;
+					add(theme.fg("accent", `${step} ${title}`));
+					// Wrap question text
+					const qWrapped = wrapTextWithAnsi(q.question, width);
+					for (const l of qWrapped) add(l);
+
+					for (let i = 0; i < q.options.length; i++) {
+						const num = i + 1;
+						const isHl = highlightIndex === i;
+						const isFlash = flashIndex === num;
+						const isRec = q.recommended === num;
+						const mark = isFlash ? theme.fg("success", "✓") : isHl ? theme.fg("accent", "▸") : isRec ? theme.fg("warning", "★") : " ";
+						const optWrapped = wrapTextWithAnsi(q.options[i], width - 4);
+						for (let j = 0; j < optWrapped.length; j++) {
+							add(j === 0 ? `${mark}${num} ${optWrapped[j]}` : `   ${optWrapped[j]}`);
+						}
+					}
+					const otherNum = q.options.length + 1;
+					const isOtherHl = highlightIndex === q.options.length;
+					add(`${isOtherHl ? theme.fg("accent", "▸") : " "}${otherNum} Other`);
+
+					if (inputMode) {
+						for (const line of editor.render(width - 1)) add(` ${line}`);
+					}
+
+					return lines;
+				}
+
+				// ── Compact renderer (35-49 cols) ────────────────
+				function renderCompact(width: number): string[] {
+					const lines: string[] = [];
+					const add = (s: string) => lines.push(truncateToWidth(s, width));
 					const addWrapped = (prefix: string, text: string, suffix?: string) => {
 						const prefixW = visibleWidth(prefix);
 						const full = prefix + text + (suffix || "");
-						if (visibleWidth(full) <= width) {
-							lines.push(full);
-							return;
+						if (visibleWidth(full) <= width) { lines.push(full); return; }
+						const indent = " ".repeat(prefixW);
+						const wrapped = wrapTextWithAnsi(text + (suffix || ""), width - prefixW);
+						for (let j = 0; j < wrapped.length; j++) {
+							lines.push((j === 0 ? prefix : indent) + wrapped[j]);
 						}
-						// Wrap the text portion, then prepend prefix/indent
+					};
+
+					if (showSummary) {
+						add(theme.fg("accent", theme.bold(`✓ ${title}`)));
+						for (let i = 0; i < questions.length; i++) {
+							const a = answers.get(i);
+							if (a) {
+								const val = a.isCustom ? `✎ ${a.answer}` : a.answer;
+								addWrapped(`${theme.fg("success", "✓")} ${theme.fg("accent", a.id)}: `, val);
+							} else {
+								add(`${theme.fg("warning", "○")} ${theme.fg("accent", questions[i].id)}: ${theme.fg("dim", "–")}`);
+							}
+						}
+						add(theme.fg("dim", "Enter=ok Esc=cancel ←=back"));
+						return lines;
+					}
+
+					const q = questions[currentQ];
+					const step = `${currentQ + 1}/${questions.length}`;
+
+					// Header: step + title, one line
+					add(`${theme.fg("accent", theme.bold(step))} ${theme.fg("muted", title)}`);
+
+					// Question
+					addWrapped(" ", theme.fg("text", q.question));
+					if (q.context) {
+						addWrapped(" ", theme.fg("dim", q.context));
+					}
+
+					if (inputMode) {
+						for (let i = 0; i < q.options.length; i++) {
+							addWrapped(theme.fg("dim", ` ${i + 1} `), theme.fg("dim", q.options[i]));
+						}
+						add(theme.fg("accent", ` ${q.options.length + 1} Other ✎`));
+						for (const line of editor.render(width - 1)) add(` ${line}`);
+						add(theme.fg("dim", "Enter=ok Esc=back"));
+					} else {
+						for (let i = 0; i < q.options.length; i++) {
+							const num = i + 1;
+							const existing = answers.get(currentQ);
+							const isPrev = existing && !existing.isCustom && existing.selected === num;
+							const isFlash = flashIndex === num;
+							const isHl = highlightIndex === i;
+							const isRec = q.recommended === num;
+
+							let mark: string;
+							let color: string;
+							if (isFlash) { mark = theme.fg("success", theme.bold("✓")); color = "success"; }
+							else if (isPrev) { mark = theme.fg("success", "✓"); color = "text"; }
+							else if (isHl) { mark = theme.fg("accent", theme.bold("▸")); color = "accent"; }
+							else if (isRec) { mark = theme.fg("warning", "★"); color = "text"; }
+							else { mark = " "; color = "text"; }
+
+							const recTag = isRec && !isFlash && !isPrev ? theme.fg("warning", " ←rec") : "";
+							addWrapped(`${mark}${num} `, theme.fg(color, q.options[i]), recTag);
+						}
+
+						// Other
+						const otherNum = q.options.length + 1;
+						const existing = answers.get(currentQ);
+						const isOtherPrev = existing?.isCustom;
+						const isOtherHl = highlightIndex === q.options.length;
+						if (isOtherPrev) {
+							addWrapped(`${theme.fg("success", "✓")}${otherNum} `, `Other → ${existing!.answer}`);
+						} else if (isOtherHl) {
+							add(`${theme.fg("accent", theme.bold("▸"))}${otherNum} ${theme.fg("accent", "Other")}`);
+						} else {
+							add(`${theme.fg("dim", ` ${otherNum}`)} Other`);
+						}
+
+						// Recommendation reason — compact: one line max
+						if (q.recommended && q.recommendedReason && !isFlash) {
+							const reason = q.recommendedReason.length > width - 4
+								? q.recommendedReason.slice(0, width - 7) + "..."
+								: q.recommendedReason;
+							add(theme.fg("dim", ` 💡 ${reason}`));
+						}
+					}
+
+					return lines;
+				}
+
+				// ── Full renderer (≥60 cols) ─────────────────────
+				function renderFull(width: number): string[] {
+					const lines: string[] = [];
+					const add = (s: string) => lines.push(truncateToWidth(s, width));
+					const addWrapped = (prefix: string, text: string, suffix?: string) => {
+						const prefixW = visibleWidth(prefix);
+						const full = prefix + text + (suffix || "");
+						if (visibleWidth(full) <= width) { lines.push(full); return; }
 						const indent = " ".repeat(prefixW);
 						const wrapped = wrapTextWithAnsi(text + (suffix || ""), width - prefixW);
 						for (let j = 0; j < wrapped.length; j++) {
@@ -336,7 +468,7 @@ export default function mcq(pi: ExtensionAPI) {
 					const barLen = Math.min(width, 60);
 					const bar = theme.fg("accent", "━".repeat(barLen));
 
-					// ─── Summary ─────────────────────────────────────
+					// ─── Summary ─────────────────────────────────
 					if (showSummary) {
 						add(bar);
 						add(theme.fg("accent", theme.bold(` ✓ ${title}`)));
@@ -358,11 +490,10 @@ export default function mcq(pi: ExtensionAPI) {
 						add("");
 						add(theme.fg("dim", " Enter submit • Esc cancel • ←/↑ go back • 1-9 edit"));
 						add(bar);
-						cachedLines = lines;
 						return lines;
 					}
 
-					// ─── Question ────────────────────────────────────
+					// ─── Question ────────────────────────────────
 					const q = questions[currentQ];
 					const step = `${currentQ + 1}/${questions.length}`;
 					const barWidth = Math.min(20, width - 4);
@@ -460,15 +591,12 @@ export default function mcq(pi: ExtensionAPI) {
 					}
 
 					add(bar);
-					cachedLines = lines;
 					return lines;
 				}
 
 				return {
 					render,
-					invalidate: () => {
-						cachedLines = undefined;
-					},
+					invalidate: () => { cachedLines = undefined; },
 					handleInput,
 				};
 			});
