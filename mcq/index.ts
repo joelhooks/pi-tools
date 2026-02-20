@@ -102,7 +102,11 @@ export default function mcq(pi: ExtensionAPI) {
 				"Don't use mcq for simple yes/no — just ask directly.\n\n" +
 				"**Adaptive flow**: Call mcq with 1-2 questions at a time, read the answers, then call mcq again " +
 				"with follow-up questions that adapt to what the user chose. This feels like a conversation, not a form. " +
-				"Only batch questions together when they're truly independent of each other.",
+				"Only batch questions together when they're truly independent of each other.\n\n" +
+				"**Recommend an option when you have a informed opinion.** Set `recommended` (1-indexed option number) " +
+				"and `recommendedReason` (1-2 sentence explanation) on each question where you have a preference. " +
+				"This is important — it shows a ★ badge and pre-selects the option so the user can just hit Enter to accept. " +
+				"Omit only when all options are genuinely equal.",
 		};
 	});
 
@@ -118,7 +122,9 @@ export default function mcq(pi: ExtensionAPI) {
 			"You can recommend an option with reasoning to guide the user's decision. " +
 			"ADAPTIVE FLOW: Prefer calling mcq with 1-2 questions at a time, then reading the answers " +
 			"to tailor your next mcq call. This makes the conversation feel responsive — later questions " +
-			"adapt to earlier answers instead of being predetermined. Only batch questions when they're truly independent.",
+			"adapt to earlier answers instead of being predetermined. Only batch questions when they're truly independent. " +
+			"ALWAYS set `recommended` (1-indexed) and `recommendedReason` when you have a preference — " +
+			"this shows a ★ badge and pre-selects the option. Omit only when options are genuinely equal.",
 		parameters: MCQParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
