@@ -66,9 +66,33 @@ function appendToDaily(text: string): void {
 }
 
 export function emitEvent(name: string, data: Record<string, unknown>): void {
+  // Send event to Inngest via HTTP API.
+  // Reads keys from ~/.config/inngest/env (created during Inngest setup).
+  // Falls back silently if Inngest isn't running — events are best-effort.
+  const envPath = path.join(os.homedir(), ".config/inngest/env");
+  let eventKey = process.env.INNGEST_EVENT_KEY || "";
+  const baseUrl = process.env.INNGEST_BASE_URL || "http://localhost:8288";
+
+  if (!eventKey) {
+    try {
+      const envContent = fs.readFileSync(envPath, "utf-8");
+      const match = envContent.match(/INNGEST_EVENT_KEY=(\S+)/);
+      if (match) eventKey = match[1];
+    } catch {}
+  }
+
+  if (!eventKey) return; // No key = no Inngest = skip silently
+
+  const payload = JSON.stringify({ name, data });
   const child = spawn(
-    "igs",
-    ["send", name, "--data", JSON.stringify(data)],
+    "curl",
+    [
+      "-sf", "-X", "POST",
+      `${baseUrl}/e/${eventKey}`,
+      "-H", "Content-Type: application/json",
+      "-d", payload,
+      "--max-time", "5",
+    ],
     { detached: true, stdio: "ignore" }
   );
   child.unref();
