@@ -3,7 +3,7 @@
  *
  * Dispatches work to Inngest via system/agent.requested events.
  * Watches ~/.joelclaw/workspace/inbox/ for result files.
- * Status shown in widget — results update silently.
+ * Shows live status in a compact widget.
  */
 
 import * as fs from "node:fs";
@@ -11,11 +11,9 @@ import { randomUUID } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
-
-// ── Types ───────────────────────────────────────────────
 
 interface InboxPayload {
   status?: string;
@@ -24,20 +22,28 @@ interface InboxPayload {
   error?: string;
   tool?: string;
   requestId?: string;
+  sessionId?: string;
 }
+
+type RequestStatus = "dispatched" | "done" | "error";
 
 interface TrackedRequest {
   requestId: string;
   task: string;
-  tool: string;
-  status: "dispatched" | "done" | "error";
+  tool: BackgroundTool;
+  status: RequestStatus;
   dispatchedAt: number;
   completedAt: number | null;
   result: string | null;
   error: string | null;
 }
 
-// ── State ───────────────────────────────────────────────
+type BackgroundTool = "codex" | "claude" | "pi";
+
+type ThemeLike = {
+  fg: (token: string, text: string) => string;
+  bold: (text: string) => string;
+};
 
 const HOME = os.homedir();
 const INBOX_DIR = path.join(HOME, ".joelclaw", "workspace", "inbox");
@@ -46,16 +52,45 @@ const DEFAULT_INNGEST_URL = process.env.INNGEST_URL ?? "http://localhost:8288";
 const DEFAULT_INNGEST_EVENT_KEY = process.env.INNGEST_EVENT_KEY ?? "37aa349b89692d657d276a40e0e47a15";
 const BACKGROUND_TOOLS = ["codex", "claude", "pi"] as const;
 
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const SPINNER_INTERVAL_MS = 80;
+const COMPLETED_LINGER_MS = 30_000;
+
 const tracked = new Map<string, TrackedRequest>();
 let widgetTui: { requestRender: () => void } | null = null;
-let statusTimer: ReturnType<typeof setInterval> | null = null;
-const COMPLETED_LINGER_MS = 15_000;
+let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+let spinnerFrame = 0;
+let stateVersion = 0;
 
-// ── Formatting ──────────────────────────────────────────
+/** Session-scoped routing state — set on session_start */
+let currentSessionId: string | null = null;
+let isGatewaySession = false;
 
-function elapsedSince(ts: number): string {
-  const sec = Math.round((Date.now() - ts) / 1000);
-  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${sec % 60}s`;
+let cachedWidgetWidth: number | null = null;
+let cachedWidgetVersion = -1;
+let cachedWidgetLines: string[] | null = null;
+
+function nowMs(): number {
+  return Date.now();
+}
+
+function elapsedSecondsSince(ts: number): number {
+  return Math.max(0, Math.round((nowMs() - ts) / 1000));
+}
+
+function formatElapsed(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m${s}s`;
+}
+
+function firstNonEmptyLine(text: string): string {
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (t) return t;
+  }
+  return "";
 }
 
 function preview(text: unknown, max = 180): string {
@@ -64,78 +99,209 @@ function preview(text: unknown, max = 180): string {
   return value.length > max ? `${value.slice(0, max - 1)}…` : value;
 }
 
-// ── Widget ──────────────────────────────────────────────
-
-function refreshWidget(): void {
-  widgetTui?.requestRender();
+function shortRequestId(requestId: string | undefined): string {
+  if (!requestId) return "req_unknown";
+  return requestId.slice(0, 12);
 }
 
-function ensureStatusTimer(): void {
-  if (statusTimer) return;
-  statusTimer = setInterval(() => {
-    const now = Date.now();
-    const hasVisible = [...tracked.values()].some(
-      (t) => t.status === "dispatched" || (t.completedAt && now - t.completedAt < COMPLETED_LINGER_MS),
-    );
-    if (hasVisible) {
-      refreshWidget();
-    } else {
-      stopStatusTimer();
-      refreshWidget();
-    }
-  }, 1000);
+function invalidateWidgetCache(): void {
+  cachedWidgetWidth = null;
+  cachedWidgetVersion = -1;
+  cachedWidgetLines = null;
 }
 
-function stopStatusTimer(): void {
-  if (statusTimer) {
-    clearInterval(statusTimer);
-    statusTimer = null;
-  }
+function bumpState(requestRender = true): void {
+  stateVersion += 1;
+  invalidateWidgetCache();
+  if (requestRender) widgetTui?.requestRender();
 }
 
-function renderWidget(theme: any): string[] {
-  const now = Date.now();
-  const visible = [...tracked.values()].filter(
-    (t) => t.status === "dispatched" || (t.completedAt && now - t.completedAt < COMPLETED_LINGER_MS),
-  );
-  if (visible.length === 0) return [];
-
-  return visible.map((t) => {
-    const icon =
-      t.status === "dispatched"
-        ? theme.fg("warning", "◆")
-        : t.status === "done"
-          ? theme.fg("success", "✓")
-          : theme.fg("error", "✗");
-    const elapsed = elapsedSince(t.dispatchedAt);
-    const rid = t.requestId.slice(0, 12);
-
-    let snippet: string;
-    if (t.status !== "dispatched" && (t.result || t.error)) {
-      const raw = t.error || t.result || "";
-      const firstLine = raw.split("\n").find((l) => l.trim()) || "";
-      snippet = firstLine.length > 45 ? firstLine.slice(0, 42) + "…" : firstLine;
-    } else {
-      snippet = t.task.length > 45 ? t.task.slice(0, 42) + "…" : t.task;
-    }
-
-    return `${icon} ${theme.fg("text", rid)} ${theme.fg("dim", `${t.tool} · ${elapsed}`)} ${theme.fg("muted", snippet)}`;
+function visibleRequests(now = nowMs()): TrackedRequest[] {
+  return [...tracked.values()].filter((req) => {
+    if (req.status === "dispatched") return true;
+    if (!req.completedAt) return false;
+    return now - req.completedAt <= COMPLETED_LINGER_MS;
   });
 }
 
-// ── Inbox processing ────────────────────────────────────
+function countsFor(list: TrackedRequest[]): { running: number; done: number; failed: number } {
+  let running = 0;
+  let done = 0;
+  let failed = 0;
+  for (const req of list) {
+    if (req.status === "dispatched") running += 1;
+    else if (req.status === "done") done += 1;
+    else failed += 1;
+  }
+  return { running, done, failed };
+}
+
+function rowPreview(req: TrackedRequest): string {
+  if (req.status === "error" && req.error) {
+    return firstNonEmptyLine(req.error) || "failed";
+  }
+  return firstNonEmptyLine(req.task) || "(no task)";
+}
+
+function rowIcon(req: TrackedRequest, theme: ThemeLike): string {
+  if (req.status === "dispatched") {
+    return theme.fg("warning", SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]);
+  }
+  if (req.status === "done") return theme.fg("success", "✓");
+  return theme.fg("error", "✗");
+}
+
+function padRight(text: string, width: number): string {
+  const delta = Math.max(0, width - visibleWidth(text));
+  return `${text}${" ".repeat(delta)}`;
+}
+
+function padLeft(text: string, width: number): string {
+  const delta = Math.max(0, width - visibleWidth(text));
+  return `${" ".repeat(delta)}${text}`;
+}
+
+function borderTop(width: number, title: string, theme: ThemeLike): string {
+  const inner = Math.max(0, width - 2);
+  const head = `─ ${title} `;
+  const fill = "─".repeat(Math.max(0, inner - visibleWidth(head)));
+  const line = `╭${head}${fill}╮`;
+  return truncateToWidth(theme.fg("border", line), width);
+}
+
+function borderBottom(width: number, summary: string, theme: ThemeLike): string {
+  const inner = Math.max(0, width - 2);
+  const label = `─ ${summary} `;
+  const fill = "─".repeat(Math.max(0, inner - visibleWidth(label)));
+  const line = `╰${label}${fill}╯`;
+  return truncateToWidth(theme.fg("border", line), width);
+}
+
+function wrapBorderRow(innerText: string, width: number, theme: ThemeLike): string {
+  const inner = Math.max(0, width - 2);
+  const clipped = truncateToWidth(innerText, inner);
+  const padded = padRight(clipped, inner);
+  const row = `${theme.fg("border", "│")}${padded}${theme.fg("border", "│")}`;
+  return truncateToWidth(row, width);
+}
+
+function renderTaskRow(req: TrackedRequest, width: number, theme: ThemeLike): string {
+  const inner = Math.max(0, width - 2);
+
+  const ridWidth = 12;
+  const toolWidth = 6;
+  const elapsedWidth = 5;
+
+  const icon = rowIcon(req, theme);
+  const rid = theme.fg("text", padRight(shortRequestId(req.requestId), ridWidth));
+  const tool = theme.fg("dim", padRight(req.tool, toolWidth));
+  const elapsed = theme.fg("muted", padLeft(formatElapsed(elapsedSecondsSince(req.dispatchedAt)), elapsedWidth));
+
+  const fixedPlain = `x ${"x".repeat(ridWidth)} ${"x".repeat(toolWidth)} ${"x".repeat(elapsedWidth)} `;
+  const previewWidth = Math.max(0, inner - visibleWidth(fixedPlain));
+
+  const ageSinceComplete = req.completedAt ? nowMs() - req.completedAt : 0;
+  const olderDone = req.status !== "dispatched" && ageSinceComplete > COMPLETED_LINGER_MS * 0.66;
+  const previewColor = req.status === "error" ? "error" : olderDone ? "dim" : "muted";
+  const previewText = theme.fg(previewColor, truncateToWidth(rowPreview(req), previewWidth));
+
+  const composed = `${icon} ${rid} ${tool} ${elapsed} ${previewText}`;
+  return wrapBorderRow(composed, width, theme);
+}
+
+function renderWidget(theme: ThemeLike, width: number): string[] {
+  const w = Math.max(2, width);
+  const visible = visibleRequests();
+  if (visible.length === 0) return [];
+
+  const sorted = [...visible].sort((a, b) => b.dispatchedAt - a.dispatchedAt);
+  const counts = countsFor(sorted);
+
+  const lines: string[] = [];
+  lines.push(borderTop(w, theme.fg("accent", "background agents"), theme));
+
+  for (const req of sorted) {
+    lines.push(renderTaskRow(req, w, theme));
+  }
+
+  const footer = theme.fg(
+    "dim",
+    `${counts.running} running · ${counts.done} done · ${counts.failed} failed`,
+  );
+  lines.push(borderBottom(w, footer, theme));
+
+  return lines.map((line) => truncateToWidth(line, width));
+}
+
+function renderWidgetCached(theme: ThemeLike, width: number): string[] {
+  if (cachedWidgetLines && cachedWidgetWidth === width && cachedWidgetVersion === stateVersion) {
+    return cachedWidgetLines;
+  }
+  const lines = renderWidget(theme, width);
+  cachedWidgetLines = lines;
+  cachedWidgetWidth = width;
+  cachedWidgetVersion = stateVersion;
+  return lines;
+}
+
+function ensureSpinnerInterval(): void {
+  if (spinnerInterval) return;
+
+  spinnerInterval = setInterval(() => {
+    const visible = visibleRequests();
+    const hasRunning = visible.some((req) => req.status === "dispatched");
+
+    if (visible.length === 0) {
+      stopSpinnerInterval();
+      bumpState(true);
+      return;
+    }
+
+    if (hasRunning) {
+      spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+      bumpState(true);
+      return;
+    }
+
+    // Keep repainting once per second while only completed linger items are shown.
+    const shouldPulse = Math.floor(nowMs() / 1000) !== Math.floor((nowMs() - SPINNER_INTERVAL_MS) / 1000);
+    if (shouldPulse) bumpState(true);
+  }, SPINNER_INTERVAL_MS);
+}
+
+function stopSpinnerInterval(): void {
+  if (!spinnerInterval) return;
+  clearInterval(spinnerInterval);
+  spinnerInterval = null;
+}
 
 function ensureDirs(): void {
   try {
     fs.mkdirSync(INBOX_DIR, { recursive: true });
     fs.mkdirSync(ACK_DIR, { recursive: true });
-  } catch {}
+  } catch {
+    // ignore
+  }
 }
 
 function moveToAck(filename: string): void {
   try {
     fs.renameSync(path.join(INBOX_DIR, filename), path.join(ACK_DIR, filename));
-  } catch {}
+  } catch {
+    // ignore
+  }
+}
+
+function buildResultSummary(req: TrackedRequest | undefined, payload: InboxPayload): {
+  status: "completed" | "failed";
+  elapsed: string;
+  output: string;
+} {
+  const status: "completed" | "failed" = payload.error ? "failed" : "completed";
+  const startedAt = req?.dispatchedAt ?? nowMs();
+  const elapsed = formatElapsed(elapsedSecondsSince(startedAt));
+  const output = payload.error || payload.result || "";
+  return { status, elapsed, output };
 }
 
 function processInboxFile(pi: ExtensionAPI, filename: string): void {
@@ -156,34 +322,50 @@ function processInboxFile(pi: ExtensionAPI, filename: string): void {
     return;
   }
 
-  // Update tracked request if we know about it
-  if (payload.requestId && tracked.has(payload.requestId)) {
-    const req = tracked.get(payload.requestId)!;
-    req.status = payload.error ? "error" : "done";
-    req.completedAt = Date.now();
-    req.result = payload.result || null;
-    req.error = payload.error || null;
-    refreshWidget();
+  // ── Session routing: only deliver to the session that dispatched ──
+  // If payload has a sessionId, only the matching session picks it up.
+  // If payload has no sessionId (Inngest-originated), only gateway picks it up.
+  // Locally-tracked requests (dispatched from THIS session) always deliver.
+  const trackedReq = payload.requestId ? tracked.get(payload.requestId) : undefined;
+  const isLocallyTracked = !!trackedReq;
+
+  if (!isLocallyTracked) {
+    const payloadSessionId = payload.sessionId;
+    if (payloadSessionId) {
+      // Has a sessionId — only deliver to matching session
+      if (payloadSessionId !== currentSessionId) return;
+    } else {
+      // No sessionId (Inngest dispatch) — only gateway picks it up
+      if (!isGatewaySession) return;
+    }
   }
 
-  // Send result to model silently
-  const status = payload.status || "unknown";
-  const task = payload.task || "(no task)";
-  const resultText = payload.error || payload.result || "";
-  const toolText = payload.tool ? ` (${payload.tool})` : "";
-  const ridText = payload.requestId ? ` [${payload.requestId.slice(0, 12)}]` : "";
+  if (payload.requestId && trackedReq) {
+    trackedReq.status = payload.error ? "error" : "done";
+    trackedReq.completedAt = nowMs();
+    trackedReq.result = payload.result || null;
+    trackedReq.error = payload.error || null;
+    bumpState(true);
+    ensureSpinnerInterval();
+  }
+
+  const summary = buildResultSummary(trackedReq, payload);
+  const rid = shortRequestId(payload.requestId);
+  const task = payload.task || trackedReq?.task || "(no task)";
+  const tool = payload.tool || trackedReq?.tool || "pi";
 
   pi.sendMessage(
     {
       customType: "background-result",
-      content: `Background task ${status}${toolText}${ridText}\nTask: ${task}\nResult: ${preview(resultText)}`,
+      content: `${summary.status === "failed" ? "Failed" : "Completed"} ${rid} (${tool}) in ${summary.elapsed}\nTask: ${task}\nResult: ${preview(summary.output)}`,
       display: false,
       details: {
         requestId: payload.requestId,
-        status,
+        status: summary.status,
         task,
-        tool: payload.tool,
-        result: resultText,
+        tool,
+        elapsed: summary.elapsed,
+        result: summary.output,
       },
     },
     { triggerTurn: true, deliverAs: "followUp" },
@@ -191,8 +373,6 @@ function processInboxFile(pi: ExtensionAPI, filename: string): void {
 
   moveToAck(filename);
 }
-
-// ── Inngest dispatch ────────────────────────────────────
 
 function inngestEventUrl(): string {
   return `${DEFAULT_INNGEST_URL.replace(/\/+$/, "")}/e/${DEFAULT_INNGEST_EVENT_KEY}`;
@@ -204,47 +384,93 @@ function generateRequestId(): string {
 
 function extractSessionId(ctx: unknown): string | undefined {
   if (!ctx || typeof ctx !== "object") return undefined;
-  const sessionId = (ctx as any).sessionId;
-  if (typeof sessionId === "string" && sessionId.trim()) return sessionId.trim();
-  const sessionManager = (ctx as any).sessionManager;
+
+  const fromCtx = (ctx as { sessionId?: unknown }).sessionId;
+  if (typeof fromCtx === "string" && fromCtx.trim()) return fromCtx.trim();
+
+  const sessionManager = (ctx as { sessionManager?: { getSessionName?: () => string } }).sessionManager;
   if (sessionManager?.getSessionName) {
     try {
       const value = sessionManager.getSessionName();
       if (typeof value === "string" && value.trim()) return value.trim();
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
+
   return undefined;
 }
 
-// ── Extension ───────────────────────────────────────────
+function renderResultHeader(
+  reqId: string,
+  tool: string,
+  status: "dispatched" | "completed" | "failed",
+  elapsed: string,
+  theme: ThemeLike,
+): string {
+  const icon =
+    status === "dispatched"
+      ? theme.fg("warning", SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length])
+      : status === "completed"
+        ? theme.fg("success", "✓")
+        : theme.fg("error", "✗");
+
+  const statusColor = status === "failed" ? "error" : "dim";
+  return `${icon} ${theme.fg("text", shortRequestId(reqId))}  ${theme.fg("dim", tool)}  ${theme.fg(statusColor, status)}  ${theme.fg("muted", elapsed)}`;
+}
+
+function makeBorderedBlock(text: string, width: number, theme: ThemeLike): string[] {
+  const w = Math.max(2, width);
+  const inner = Math.max(0, w - 2);
+  const lines = text.split("\n");
+
+  const out: string[] = [];
+  out.push(theme.fg("border", `╭${"─".repeat(inner)}╮`));
+  for (const raw of lines) {
+    const clipped = truncateToWidth(raw, inner);
+    const padded = padRight(clipped, inner);
+    out.push(`${theme.fg("border", "│")}${theme.fg("muted", padded)}${theme.fg("border", "│")}`);
+  }
+  out.push(theme.fg("border", `╰${"─".repeat(inner)}╯`));
+  return out;
+}
 
 export default function (pi: ExtensionAPI) {
   let watcher: fs.FSWatcher | null = null;
 
-  // ── Widget lifecycle ──
-
   pi.on("session_start", async (_event, ctx) => {
+    // Capture session identity for inbox routing
+    try {
+      currentSessionId = ctx.sessionManager.getSessionId() ?? null;
+    } catch {
+      currentSessionId = null;
+    }
+    isGatewaySession = process.env.GATEWAY_ROLE === "central";
     ctx.ui.setWidget("background-agents", (tui, theme) => {
       widgetTui = tui;
       return {
-        render: () => renderWidget(theme),
-        invalidate: () => {},
+        render: (width: number) => renderWidgetCached(theme as ThemeLike, width),
+        invalidate: () => {
+          invalidateWidgetCache();
+        },
         dispose: () => {
-          stopStatusTimer();
+          stopSpinnerInterval();
           widgetTui = null;
+          invalidateWidgetCache();
         },
       };
     });
 
-    // Drain existing inbox files
     ensureDirs();
+
     try {
       for (const filename of fs.readdirSync(INBOX_DIR)) {
         processInboxFile(pi, filename);
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
 
-    // Watch for new results
     if (!watcher) {
       try {
         watcher = fs.watch(INBOX_DIR, (eventType, filename) => {
@@ -253,11 +479,25 @@ export default function (pi: ExtensionAPI) {
           if (!name?.endsWith(".json")) return;
           processInboxFile(pi, name);
         });
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
+
+    ensureSpinnerInterval();
   });
 
-  // ── background_agent tool ─────────────────────────────
+  pi.on("session_shutdown", () => {
+    stopSpinnerInterval();
+    if (watcher) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore
+      }
+      watcher = null;
+    }
+  });
 
   pi.registerTool({
     name: "background_agent",
@@ -265,7 +505,7 @@ export default function (pi: ExtensionAPI) {
     description: "Dispatch background work by sending system/agent.requested to Inngest and returning immediately.",
     parameters: Type.Object({
       task: Type.String({ description: "Task prompt for the background agent." }),
-      tool: Type.Optional(StringEnum(["codex", "claude", "pi"] as const, { default: "codex" })),
+      tool: Type.Optional(StringEnum(BACKGROUND_TOOLS, { default: "codex" })),
       cwd: Type.Optional(Type.String({ description: "Optional working directory override." })),
       timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: 600).", default: 600 })),
       model: Type.Optional(Type.String({ description: "Optional model override for the target agent." })),
@@ -274,31 +514,34 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const task = params.task?.trim();
       if (!task) {
-        return { content: [{ type: "text", text: "background_agent: `task` is required." }], isError: true };
+        return {
+          content: [{ type: "text", text: "background_agent: `task` is required." }],
+          isError: true,
+          details: undefined,
+        };
       }
 
-      const tool = params.tool || "codex";
+      const tool = (params.tool || "codex") as BackgroundTool;
       const timeout = params.timeout ?? 600;
       const requestId = generateRequestId();
       const sessionId = extractSessionId(ctx);
-      const cwd = params.cwd?.trim() || (ctx as any).cwd || undefined;
+      const cwd = params.cwd?.trim() || (ctx as { cwd?: string }).cwd || undefined;
       const model = params.model?.trim() || undefined;
 
-      // Track the request
       tracked.set(requestId, {
         requestId,
         task,
         tool,
         status: "dispatched",
-        dispatchedAt: Date.now(),
+        dispatchedAt: nowMs(),
         completedAt: null,
         result: null,
         error: null,
       });
-      ensureStatusTimer();
-      refreshWidget();
 
-      // Dispatch to Inngest
+      ensureSpinnerInterval();
+      bumpState(true);
+
       const data: Record<string, unknown> = { requestId, task, tool, timeout };
       if (cwd) data.cwd = cwd;
       if (model) data.model = model;
@@ -308,59 +551,109 @@ export default function (pi: ExtensionAPI) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "system/agent.requested", data }),
-      }).catch(() => {});
+      }).catch(() => {
+        // background dispatch failures are reflected by timeout/error downstream
+      });
 
       return {
-        content: [{ type: "text", text: `Dispatched ${requestId.slice(0, 12)} (${tool}). Status in widget.` }],
+        content: [{ type: "text", text: `Dispatched ${shortRequestId(requestId)} (${tool}). Status in widget.` }],
         details: { requestId, tool, task },
       };
     },
 
     renderCall(args, theme) {
       const tool = args.tool || "codex";
-      let text_str = theme.fg("toolTitle", theme.bold("background_agent"));
-      text_str += " " + theme.fg("dim", tool);
-      if (args.model) text_str += theme.fg("dim", ` · ${args.model}`);
-      const taskSnip = args.task?.length > 80 ? args.task.slice(0, 77) + "…" : args.task || "";
-      text_str += "\n" + theme.fg("dim", `  ${taskSnip}`);
-      return new Text(text_str, 0, 0);
+      const reqId = shortRequestId((args as any).requestId || "");
+      const top =
+        theme.fg("toolTitle", theme.bold("◆ background_agent")) +
+        "  " +
+        theme.fg("dim", `${tool} · `) +
+        theme.fg("muted", reqId);
+      const taskLine = truncateToWidth((args.task || "").trim(), 90);
+      const body = theme.fg("dim", `  ${taskLine || "(no task)"}`);
+      return new Text(`${top}\n${body}`, 0, 0);
     },
 
-    renderResult(result, _options, theme) {
-      const d = result.details as any;
-      if (!d?.requestId) {
+    renderResult(result, options, theme) {
+      const details = (result.details || {}) as {
+        requestId?: string;
+        tool?: string;
+      };
+
+      const requestId = details.requestId;
+      if (!requestId) {
         const txt = result.content[0];
         return new Text(txt?.type === "text" ? txt.text : "", 0, 0);
       }
 
-      const req = tracked.get(d.requestId);
-      const icon = !req || req.status === "dispatched" ? theme.fg("warning", "◆") : req.status === "done" ? theme.fg("success", "✓") : theme.fg("error", "✗");
-      const rid = d.requestId.slice(0, 12);
-      return new Text(`${icon} ${theme.fg("toolTitle", theme.bold(rid))} ${theme.fg("dim", d.tool)} ${theme.fg("muted", "dispatched")}`, 0, 0);
+      const trackedReq = tracked.get(requestId);
+      const status: "dispatched" | "completed" | "failed" =
+        !trackedReq || trackedReq.status === "dispatched"
+          ? "dispatched"
+          : trackedReq.status === "done"
+            ? "completed"
+            : "failed";
+
+      const elapsed = trackedReq
+        ? formatElapsed(elapsedSecondsSince(trackedReq.dispatchedAt))
+        : "0s";
+
+      const header = renderResultHeader(
+        requestId,
+        details.tool || trackedReq?.tool || "pi",
+        status,
+        elapsed,
+        theme as ThemeLike,
+      );
+
+      const expandedBody = trackedReq?.error || trackedReq?.result;
+      if (options.expanded && expandedBody) {
+        const block = expandedBody.length > 500 ? `${expandedBody.slice(0, 500)}…` : expandedBody;
+        return new Text(`${header}\n${theme.fg("muted", block)}`, 0, 0);
+      }
+
+      return new Text(header, 0, 0);
     },
   });
 
-  // ── Message renderer for inbox results ────────────────
-
   pi.registerMessageRenderer<any>("background-result", (message, { expanded }, theme) => {
-    const d = message.details;
+    const d = message.details as
+      | {
+          requestId?: string;
+          tool?: string;
+          status?: "completed" | "failed";
+          elapsed?: string;
+          task?: string;
+          result?: string;
+        }
+      | undefined;
+
     if (!d) return undefined;
 
-    const icon = d.status === "error" ? theme.fg("error", "✗") : theme.fg("success", "✓");
-    const rid = d.requestId ? d.requestId.slice(0, 12) : "?";
-    const toolTag = d.tool ? theme.fg("dim", ` ${d.tool}`) : "";
+    const requestId = d.requestId || "req_unknown";
+    const tool = d.tool || "pi";
+    const status = d.status === "failed" ? "failed" : "completed";
+    const elapsed = d.elapsed || "0s";
 
-    let header = `${icon} ${theme.fg("toolTitle", theme.bold(rid))}${toolTag} ${theme.fg("dim", d.status)}`;
+    const icon = status === "failed" ? theme.fg("error", "✗") : theme.fg("success", "✓");
+    const head = `${icon} ${theme.fg("text", shortRequestId(requestId))}  ${theme.fg("dim", tool)}  ${theme.fg(status === "failed" ? "error" : "dim", status)}  ${theme.fg("muted", elapsed)}`;
 
-    if (expanded && d.result) {
-      const resultSnip = d.result.length > 500 ? d.result.slice(0, 497) + "…" : d.result;
-      header += `\n${theme.fg("muted", resultSnip)}`;
-    } else if (!expanded && d.result) {
-      const firstLine = d.result.split("\n").find((l: string) => l.trim()) || "";
-      const snip = firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine;
-      if (snip) header += `  ${theme.fg("muted", snip)}`;
+    if (!expanded) {
+      const collapsedPreviewSource = d.status === "failed" ? d.result || d.task || "" : d.task || d.result || "";
+      const collapsedPreview = firstNonEmptyLine(collapsedPreviewSource);
+      const shortPreview = truncateToWidth(collapsedPreview || "(no details)", 40);
+      return new Text(`${head}  ${theme.fg("muted", shortPreview)}`, 0, 0);
     }
 
-    return new Text(header, 1, 0);
+    const full = d.result?.trim() || "(no result)";
+    return {
+      render: (width: number) => {
+        const w = Math.max(2, width);
+        const lines: string[] = [truncateToWidth(head, w)];
+        lines.push(...makeBorderedBlock(full, w, theme as ThemeLike).map((line) => truncateToWidth(line, w)));
+        return lines;
+      },
+      invalidate: () => {},
+    };
   });
 }
