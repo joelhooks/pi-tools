@@ -146,6 +146,13 @@ function generateName(prompt: string): string {
   return template.replace(/\$W/g, keyword);
 }
 
+// ── Text Sanitization ──────────────────────────────────
+
+/** Strip control chars and collapse whitespace to produce safe single-line text */
+function sanitize(s: string): string {
+  return s.replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 // ── Types ──────────────────────────────────────────────
 
 interface TaskItem {
@@ -258,7 +265,7 @@ function renderWidget(theme: any): string[] {
       rawSnippet = t.prompt;
     }
     // Strip ALL control chars and collapse whitespace — newlines in widget lines crash pi
-    rawSnippet = rawSnippet.replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+    rawSnippet = sanitize(rawSnippet);
     const snippetWidth = visibleWidth(rawSnippet);
     const snippet = snippetWidth > maxSnippetWidth
       ? truncateToWidth(rawSnippet, maxSnippetWidth - 1) + "…"
@@ -504,7 +511,7 @@ export default function (pi: ExtensionAPI) {
       if (args.sandbox && args.sandbox !== "workspace-write") meta.push(args.sandbox);
       let text = theme.fg("toolTitle", theme.bold("codex"));
       text += " " + theme.fg("dim", meta.join(" · "));
-      const cleanPreview = args.prompt.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+      const cleanPreview = sanitize(args.prompt);
       const preview = cleanPreview.length > 100 ? cleanPreview.slice(0, 97) + "…" : cleanPreview;
       text += "\n" + theme.fg("dim", `  ${preview}`);
       return new Text(text, 0, 0);
@@ -591,7 +598,7 @@ export default function (pi: ExtensionAPI) {
       for (const task of tasks.values()) {
         const icon = task.status === "running" ? "◆" : task.status === "done" ? "✓" : "✗";
         const session = task.sessionId ? ` ${shortId(task.sessionId)}` : "";
-        const preview = task.output ? ` — ${task.output.slice(0, 60).replace(/\n/g, " ")}` : "";
+        const preview = task.output ? ` — ${sanitize(task.output).slice(0, 60)}` : "";
         lines.push(`${icon} ${task.name} [${task.status}] ${elapsed(task)}${session}${preview}`);
         summaries.push({
           id: task.id,
@@ -600,7 +607,7 @@ export default function (pi: ExtensionAPI) {
           elapsed: elapsed(task),
           sessionId: task.sessionId,
           prompt: task.prompt,
-          outputPreview: task.output?.slice(0, 100)?.replace(/\n/g, " ") || "",
+          outputPreview: sanitize(task.output || "").slice(0, 100),
         });
       }
       return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "list", tasks: summaries } };
@@ -635,10 +642,10 @@ export default function (pi: ExtensionAPI) {
         if (expanded && d.output) {
           const outputLines = d.output.split("\n").slice(0, 20);
           text += "\n" + theme.fg("dim", "───");
-          text += "\n" + outputLines.map((l: string) => `  ${l}`).join("\n");
+          text += "\n" + outputLines.map((l: string) => `  ${sanitize(l)}`).join("\n");
           if (d.output.split("\n").length > 20) text += "\n" + theme.fg("dim", `… ${d.output.split("\n").length - 20} more`);
         } else {
-          const cleanPrompt = d.prompt.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+          const cleanPrompt = sanitize(d.prompt);
           const snip = cleanPrompt.length > 80 ? cleanPrompt.slice(0, 77) + "…" : cleanPrompt;
           text += "\n" + theme.fg("muted", `  ${snip}`);
         }
@@ -666,7 +673,7 @@ export default function (pi: ExtensionAPI) {
         if (expanded) {
           for (const t of d.tasks) {
             const icon = t.status === "running" ? theme.fg("warning", "◆") : t.status === "done" ? theme.fg("success", "✓") : theme.fg("error", "✗");
-            const cleanP = (t.prompt || "").replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+            const cleanP = sanitize(t.prompt || "");
             const snip = cleanP.length > 60 ? cleanP.slice(0, 57) + "…" : cleanP;
             text += `\n  ${icon} ${t.name || `#${t.id}`} ${theme.fg("dim", t.elapsed)} ${theme.fg("muted", snip)}`;
           }
@@ -701,7 +708,7 @@ export default function (pi: ExtensionAPI) {
         container.addChild(new Spacer(1));
         for (const tc of details.toolCalls.slice(-15)) {
           container.addChild(
-            new Text(theme.fg("dim", "  →") + " " + theme.fg("accent", tc.type) + " " + theme.fg("dim", tc.text.slice(0, 70)), 1, 0),
+            new Text(theme.fg("dim", "  →") + " " + theme.fg("accent", tc.type) + " " + theme.fg("dim", sanitize(tc.text).slice(0, 70)), 1, 0),
           );
         }
         if (details.toolCalls.length > 15) {
