@@ -107,6 +107,13 @@ const MCQParams = Type.Object({
 	questions: Type.Array(MCQQuestionSchema, {
 		description: "Questions to present. Each gets up to 3 options plus auto-appended Other.",
 	}),
+	timeout: Type.Optional(
+		Type.Number({
+			description:
+				"Seconds per question before auto-selecting the recommended answer. Default: 30. Set 0 to disable.",
+			minimum: 0,
+		}),
+	),
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -184,6 +191,8 @@ export default function mcq(pi: ExtensionAPI) {
 				conviction: (q as any).conviction as MCQQuestion["conviction"],
 				weight: (q as any).weight as MCQQuestion["weight"],
 			}));
+			const timeoutRaw = typeof (params as any).timeout === "number" ? (params as any).timeout : 30;
+			const timeoutSecs = Number.isFinite(timeoutRaw) ? Math.max(0, Math.trunc(timeoutRaw)) : 30;
 
 			// Hide the working spinner while custom UI is showing
 			ctx.ui.setWorkingMessage(" ");
@@ -222,6 +231,78 @@ export default function mcq(pi: ExtensionAPI) {
 					advance();
 				};
 
+				// ── Timeout / auto-select ──
+				const timeoutEnabled = timeoutSecs > 0;
+				let remainingSecs = timeoutSecs;
+				let countdownTimer: ReturnType<typeof setInterval> | null = null;
+				const countdownCancelledQuestions = new Set<number>();
+				let advanceTimer: ReturnType<typeof setTimeout> | null = null;
+
+				function getRecommendedIndex(q: MCQQuestion): number | null {
+					if (!Number.isInteger(q.recommended)) return null;
+					if (!q.recommended || q.recommended < 1 || q.recommended > q.options.length) return null;
+					return q.recommended;
+				}
+
+				function canRunCountdown(questionIndex = currentQ): boolean {
+					if (!timeoutEnabled || showSummary || inputMode) return false;
+					if (countdownCancelledQuestions.has(questionIndex)) return false;
+					if (answers.has(questionIndex)) return false;
+					const q = questions[questionIndex];
+					return getRecommendedIndex(q) !== null;
+				}
+
+				function stopCountdown() {
+					if (countdownTimer) {
+						clearInterval(countdownTimer);
+						countdownTimer = null;
+					}
+				}
+
+				function cancelCountdownForCurrentQuestion() {
+					if (showSummary) return;
+					const wasActive = countdownTimer !== null;
+					countdownCancelledQuestions.add(currentQ);
+					stopCountdown();
+					if (wasActive) refresh();
+				}
+
+				function startCountdown() {
+					countdownTimer = setInterval(() => {
+						if (!canRunCountdown()) {
+							stopCountdown();
+							return;
+						}
+						remainingSecs--;
+						refresh();
+						if (remainingSecs <= 0) {
+							stopCountdown();
+							autoSelect();
+						}
+					}, 1000);
+				}
+
+				function resetCountdown() {
+					stopCountdown();
+					if (!canRunCountdown()) return;
+					remainingSecs = timeoutSecs;
+					startCountdown();
+				}
+
+				function autoSelect() {
+					if (showSummary || inputMode) return;
+					const q = questions[currentQ];
+					const recommended = getRecommendedIndex(q);
+					if (!recommended) return;
+					selectOption(recommended);
+				}
+
+				function timerDisplay(): string {
+					if (!canRunCountdown() || countdownTimer === null) return "";
+					const color = remainingSecs <= 5 ? "error" : remainingSecs <= 10 ? "warning" : "dim";
+					return " " + theme.fg(color, `⏱ auto ${remainingSecs}s`);
+				}
+
 				// ── Helpers ──
 				function refresh() {
 					cachedLines = undefined;
@@ -230,15 +311,21 @@ export default function mcq(pi: ExtensionAPI) {
 				}
 
 				function advance() {
+					if (advanceTimer) {
+						clearTimeout(advanceTimer);
+						advanceTimer = null;
+					}
 					if (currentQ < questions.length - 1) {
 						currentQ++;
 						const nextQ = questions[currentQ];
 						// "strong" (default) pre-focuses recommended; "slight" just badges it
-						const shouldPreselect = nextQ.recommended && nextQ.conviction !== "slight";
-						highlightIndex = shouldPreselect ? nextQ.recommended! - 1 : 0;
+						const recommended = getRecommendedIndex(nextQ);
+						const shouldPreselect = recommended && nextQ.conviction !== "slight";
+						highlightIndex = shouldPreselect ? recommended! - 1 : 0;
 					} else {
 						showSummary = true;
 					}
+					resetCountdown();
 					refresh();
 				}
 
@@ -263,14 +350,21 @@ export default function mcq(pi: ExtensionAPI) {
 						});
 						flashIndex = index;
 						refresh();
-						setTimeout(() => {
+						if (advanceTimer) clearTimeout(advanceTimer);
+						advanceTimer = setTimeout(() => {
 							flashIndex = null;
 							advance();
+							advanceTimer = null;
 						}, 120);
 					}
 				}
 
 				function submit(cancelled: boolean) {
+					stopCountdown();
+					if (advanceTimer) {
+						clearTimeout(advanceTimer);
+						advanceTimer = null;
+					}
 					const ordered: MCQAnswer[] = [];
 					for (let i = 0; i < questions.length; i++) {
 						const a = answers.get(i);
@@ -281,6 +375,10 @@ export default function mcq(pi: ExtensionAPI) {
 
 				// ── Input handling ──
 				function handleInput(data: string) {
+					if (data && !showSummary) {
+						cancelCountdownForCurrentQuestion();
+					}
+
 					if (inputMode) {
 						if (matchesKey(data, Key.escape)) {
 							inputMode = false;
@@ -300,6 +398,7 @@ export default function mcq(pi: ExtensionAPI) {
 							showSummary = false;
 							currentQ = questions.length - 1;
 							highlightIndex = 0;
+							resetCountdown();
 							refresh();
 							return;
 						}
@@ -308,6 +407,7 @@ export default function mcq(pi: ExtensionAPI) {
 							showSummary = false;
 							currentQ = n - 1;
 							highlightIndex = 0;
+							resetCountdown();
 							refresh();
 							return;
 						}
@@ -319,7 +419,12 @@ export default function mcq(pi: ExtensionAPI) {
 						const now = Date.now();
 						if (now - lastEscTime < 400) { submit(true); return; }
 						lastEscTime = now;
-						if (currentQ > 0) { currentQ--; highlightIndex = 0; refresh(); }
+						if (currentQ > 0) {
+							currentQ--;
+							highlightIndex = 0;
+							resetCountdown();
+							refresh();
+						}
 						return;
 					}
 
@@ -385,13 +490,16 @@ export default function mcq(pi: ExtensionAPI) {
 								add(`${theme.fg("warning", "○")} ${questions[i].id}: ${theme.fg("dim", "–")}`);
 							}
 						}
-						add(theme.fg("dim", "Enter=ok Esc=cancel"));
+						add(theme.fg("dim", "Enter=ok Esc=cancel") + timerDisplay());
 						return lines;
 					}
 
 					const q = questions[currentQ];
 					if (questions.length > 1) {
-						add(theme.fg("accent", `${currentQ + 1}/${questions.length} ${title}`));
+						add(theme.fg("accent", `${currentQ + 1}/${questions.length} ${title}`) + timerDisplay());
+					} else {
+						const td = timerDisplay();
+						if (td) add(td.trimStart());
 					}
 					const qWrapped = wrapTextWithAnsi(q.question, width);
 					for (const l of qWrapped) add(l);
@@ -465,7 +573,7 @@ export default function mcq(pi: ExtensionAPI) {
 								add(`${theme.fg("warning", "○")} ${theme.fg("accent", questions[i].id)}: ${theme.fg("dim", "–")}`);
 							}
 						}
-						add(theme.fg("dim", "Enter=ok Esc=cancel ←=back"));
+						add(theme.fg("dim", "Enter=ok Esc=cancel ←=back") + timerDisplay());
 						return lines;
 					}
 
@@ -473,7 +581,10 @@ export default function mcq(pi: ExtensionAPI) {
 
 					// Header: step + title, skip step counter for single question
 					if (questions.length > 1) {
-						add(`${theme.fg("accent", theme.bold(`${currentQ + 1}/${questions.length}`))} ${theme.fg("muted", title)}`);
+						add(`${theme.fg("accent", theme.bold(`${currentQ + 1}/${questions.length}`))} ${theme.fg("muted", title)}` + timerDisplay());
+					} else {
+						const td = timerDisplay();
+						if (td) add(td.trimStart());
 					}
 
 					// Question
@@ -572,7 +683,7 @@ export default function mcq(pi: ExtensionAPI) {
 						}
 
 						add("");
-						add(theme.fg("dim", " Enter submit • Esc cancel • ←/↑ go back • 1-9 edit"));
+						add(theme.fg("dim", " Enter submit • Esc cancel • ←/↑ go back • 1-9 edit") + timerDisplay());
 						add(bar);
 						return lines;
 					}
@@ -585,10 +696,10 @@ export default function mcq(pi: ExtensionAPI) {
 						const step = `${currentQ + 1}/${questions.length}`;
 						const barWidth = Math.min(20, width - 4);
 						add(
-							` ${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", step)}  ${progressBar(currentQ + 1, questions.length, barWidth, theme.fg.bind(theme))}`,
+							` ${theme.fg("accent", theme.bold(title))} ${theme.fg("muted", step)}  ${progressBar(currentQ + 1, questions.length, barWidth, theme.fg.bind(theme))}` + timerDisplay(),
 						);
 					} else {
-						add(` ${theme.fg("accent", theme.bold(title))}`);
+						add(` ${theme.fg("accent", theme.bold(title))}` + timerDisplay());
 					}
 					add("");
 					addWrapped(" ", theme.fg("text", q.question));
@@ -681,6 +792,9 @@ export default function mcq(pi: ExtensionAPI) {
 					add(bar);
 					return lines;
 				}
+
+				// Start the countdown
+				resetCountdown();
 
 				return {
 					render,

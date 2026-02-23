@@ -548,7 +548,7 @@ export default function (pi: ExtensionAPI) {
       }),
       prompt: Type.Optional(Type.String({ description: "Prompt for each iteration (prompt mode only)" })),
       max_iterations: Type.Optional(Type.Number({ description: "Max iterations (default: 10)" })),
-      model: Type.Optional(Type.String({ description: "Codex model (default: o4-mini)" })),
+      model: Type.Optional(Type.String({ description: "Codex model (default: gpt-5.3-codex)" })),
       sandbox: Type.Optional(
         Type.String({ description: "Sandbox: read-only, workspace-write, danger-full-access (default: workspace-write)" }),
       ),
@@ -564,7 +564,7 @@ export default function (pi: ExtensionAPI) {
         cwd: params.cwd || ctx.cwd,
         mode: params.mode,
         prompt: params.prompt,
-        model: params.model || "o4-mini",
+        model: params.model || "gpt-5.3-codex",
         sandbox: params.sandbox || "workspace-write",
         iteration: 0,
         maxIterations: params.max_iterations || 10,
@@ -627,7 +627,7 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme) {
       const meta: string[] = [args.mode];
-      if (args.model && args.model !== "o4-mini") meta.push(args.model);
+      if (args.model && args.model !== "gpt-5.3-codex") meta.push(args.model);
       if (args.sandbox && args.sandbox !== "workspace-write") meta.push(args.sandbox);
       if (args.max_iterations) meta.push(`max ${args.max_iterations}`);
       if (args.skills?.length) meta.push(`+${args.skills.join(",")}`);

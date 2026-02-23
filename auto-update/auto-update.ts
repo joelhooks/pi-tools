@@ -16,8 +16,20 @@ const PACKAGE_NAME = "@mariozechner/pi-coding-agent";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+function binaryExists(binary: string): boolean {
+	try {
+		execSync(`command -v ${binary}`, { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function detectInstallMethod(): string {
 	const resolvedPath = `${__dirname}\0${process.execPath || ""}`.toLowerCase();
+	if (resolvedPath.includes("/.bun/") || resolvedPath.includes("\\.bun\\")) {
+		return "bun";
+	}
 	if (resolvedPath.includes("/pnpm/") || resolvedPath.includes("/.pnpm/") || resolvedPath.includes("\\pnpm\\")) {
 		return "pnpm";
 	}
@@ -27,12 +39,20 @@ function detectInstallMethod(): string {
 	if (resolvedPath.includes("/npm/") || resolvedPath.includes("/node_modules/") || resolvedPath.includes("\\npm\\")) {
 		return "npm";
 	}
+
+	if (binaryExists("bun")) return "bun";
+	if (binaryExists("pnpm")) return "pnpm";
+	if (binaryExists("yarn")) return "yarn";
+	if (binaryExists("npm")) return "npm";
+
 	return "npm";
 }
 
 function getInstallCommand(): string {
 	const method = detectInstallMethod();
 	switch (method) {
+		case "bun":
+			return `bun install -g ${PACKAGE_NAME}`;
 		case "pnpm":
 			return `pnpm install -g ${PACKAGE_NAME}`;
 		case "yarn":
