@@ -609,18 +609,21 @@ export default function (pi: ExtensionAPI) {
           if (sessionName) pwd = `${pwd} • ${sessionName}`;
 
           const mcpLabel = getMcpLabel();
+          // Collect extension statuses (e.g. grind mode 🔥)
+          const extStatuses = [...footerData.getExtensionStatuses().values()].filter(Boolean).join(" ");
+          const rightParts = [extStatuses, mcpLabel].filter(Boolean).join("  ");
           let line1: string;
-          if (mcpLabel) {
+          if (rightParts) {
             const pwdWidth = visibleWidth(pwd);
-            const labelWidth = visibleWidth(mcpLabel);
-            const gap = width - pwdWidth - labelWidth;
+            const rightWidth = visibleWidth(rightParts);
+            const gap = width - pwdWidth - rightWidth;
             if (gap >= 2) {
-              line1 = pwd + " ".repeat(gap) + mcpLabel;
+              line1 = pwd + " ".repeat(gap) + rightParts;
             } else {
               // Not enough room — truncate pwd to make space
-              const maxPwd = width - labelWidth - 2;
+              const maxPwd = width - rightWidth - 2;
               line1 = maxPwd > 3
-                ? truncateToWidth(pwd, maxPwd) + "  " + mcpLabel
+                ? truncateToWidth(pwd, maxPwd) + "  " + rightParts
                 : truncateToWidth(pwd, width);
             }
           } else {
