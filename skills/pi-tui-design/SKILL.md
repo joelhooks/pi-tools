@@ -329,6 +329,318 @@ ctx.ui.setFooter((tui, theme, footerData) => ({
 | Generic spinner for all loading states | Context-appropriate progress (bar, percentage, step count) |
 | Fixed-width layouts | Responsive to `width` param, `minWidth` guards |
 
+## Extension Architecture Patterns
+
+### Overlay components with `Component` + `Focusable`
+
+Nico's overlays always model lifecycle explicitly:
+
+```typescript
+import type { Component, Focusable, TUI } from "@mariozechner/pi-tui";
+import type { Theme } from "@mariozechner/pi-coding-agent";
+import { matchesKey } from "@mariozechner/pi-tui";
+
+type Done = (result: string | null) => void;
+
+class OverlayTemplate implements Component, Focusable {
+  focused = false;
+
+  constructor(
+    private tui: TUI,
+    private theme: Theme,
+    private done: Done,
+  ) {}
+
+  handleInput(data: string): void {
+    if (matchesKey(data, "escape")) this.done(null);
+    if (matchesKey(data, "return")) this.done("selected");
+  }
+
+  render(_width: number): string[] {
+    return [];
+  }
+
+  invalidate(): void {}
+  dispose(): void {}
+}
+
+await ctx.ui.custom((tui, theme, _kb, done) => {
+  return new OverlayTemplate(tui, theme, (result) => done(result));
+}, { overlay: true, overlayOptions: { anchor: "center", width: 64 } });
+```
+
+That shape is especially clear in `InteractiveShellOverlay` and `MessengerConfigOverlay`:
+
+- Constructor is `constructor(tui, theme, done)`.
+- `handleInput` handles command and movement keys.
+- `render(width)` builds full frame text.
+- `invalidate` clears render cache.
+- `dispose` removes intervals/timers and unregisters callbacks.
+
+### Shared render helpers
+
+Reusable helper-style rendering reduces visual drift between overlays:
+
+```typescript
+import type { Theme } from "@mariozechner/pi-coding-agent";
+import { visibleWidth, truncateToWidth } from "@mariozechner/pi-tui";
+
+export function pad(s: string, len: number): string {
+  const vis = visibleWidth(s);
+  return s + " ".repeat(Math.max(0, len - vis));
+}
+
+export function row(content: string, width: number, theme: Theme): string {
+  const innerW = width - 2;
+  return theme.fg("border", "│") + pad(" " + truncateToWidth(content, innerW - 1), innerW) + theme.fg("border", "│");
+}
+
+export function renderHeader(text: string, width: number, theme: Theme): string {
+  const innerW = width - 2;
+  const padLen = Math.max(0, innerW - visibleWidth(text));
+  const padLeft = Math.floor(padLen / 2);
+  const padRight = padLen - padLeft;
+  return (
+    theme.fg("border", "╭" + "─".repeat(padLeft)) +
+    theme.fg("accent", text) +
+    theme.fg("border", "─".repeat(padRight) + "╮")
+  );
+}
+
+export function renderFooter(text: string, width: number, theme: Theme): string {
+  const innerW = width - 2;
+  const padLen = Math.max(0, innerW - visibleWidth(text));
+  const padLeft = Math.floor(padLen / 2);
+  const padRight = padLen - padLeft;
+  return (
+    theme.fg("border", "╰" + "─".repeat(padLeft)) +
+    theme.fg("dim", text) +
+    theme.fg("border", "─".repeat(padRight) + "╯")
+  );
+}
+```
+
+Shared helper files in `pi-subagents` (`render-helpers.ts`) include `fuzzyFilter()`, `formatPath()`, and `formatScrollInfo()` for exactly this purpose.
+
+### Footer replacement
+
+`ctx.ui.setFooter()` is Nico's strongest pattern for complete status bars:
+
+```typescript
+ctx.ui.setFooter((tui: any, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
+  footerDataRef = footerData;
+  tuiRef = tui;
+  const unsub = footerData.onBranchChange(() => tui.requestRender());
+
+  return {
+    dispose: unsub,
+    invalidate() {},
+    render(width: number): string[] {
+      const segments: string[] = [];
+      const ctx = buildSegmentContext(footerData, activeTheme);
+      const preset = getPreset("default");
+
+      for (const id of [...preset.leftSegments, ...preset.rightSegments, ...(preset.secondarySegments ?? [])]) {
+        const rendered = renderSegment(id, ctx);
+        if (rendered.visible && rendered.content) segments.push(rendered.content);
+      }
+
+      if (segments.length === 0) return [];
+      return [" " + segments.join(` ${fg(activeTheme, "separator", "⟩", colors)} `) + " "];
+    },
+  };
+});
+```
+
+`pi-powerline-footer` also replaces editor/footer lines by overriding the editor render and returning `[]` from `setFooter` to keep one rendering path.
+
+### Config/settings persistence
+
+Across these repos, extension persistence follows this shape:
+
+```typescript
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+interface ExtensionSettings {
+  theme: "dark" | "light";
+  enabled: boolean;
+}
+
+const extensionDir = join(homedir(), ".pi", "agent", "extensions", "your-extension");
+const settingsPath = join(extensionDir, "settings.json");
+const extensionDefaults: ExtensionSettings = { theme: "dark", enabled: true };
+
+function loadSettings(): ExtensionSettings {
+  if (!existsSync(settingsPath)) return extensionDefaults;
+  const raw = readFileSync(settingsPath, "utf-8");
+  return { ...extensionDefaults, ...JSON.parse(raw) };
+}
+
+function saveSettings(next: Partial<ExtensionSettings>): void {
+  mkdirSync(extensionDir, { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify({ ...loadSettings(), ...next }, null, 2));
+}
+```
+
+Use defaults-first merge, then save only on mutation boundaries (`escape`/`q` in overlays, settings commands, etc.) like `pi-messenger` and `pi-subagent` do.
+
+### Hands-free / background mode
+
+`InteractiveShellOverlay` shows the background pattern:
+
+```typescript
+if (options.mode === "hands-free" || options.mode === "dispatch") {
+  this.state = "hands-free";
+  this.sessionId = options.sessionId ?? generateSessionId(options.name);
+  sessionManager.registerActive({
+    id: this.sessionId,
+    command: options.command,
+    reason: options.reason,
+    write: (data) => this.session.write(data),
+    kill: () => this.killSession(),
+    background: () => this.backgroundSession(),
+    getOutput: (opts) => this.getOutputSinceLastCheck(opts),
+    onComplete: (cb) => this.registerCompleteCallback(cb),
+    setUpdateInterval: (ms) => this.setUpdateInterval(ms),
+    setQuietThreshold: (ms) => this.setQuietThreshold(ms),
+  });
+}
+
+if (this.options.onHandsFreeUpdate) {
+  this.options.onHandsFreeUpdate({ status: "running", sessionId: this.sessionId, runtime: 0, tail: [], tailTruncated: false, totalCharsSent: 0, budgetExhausted: false });
+}
+```
+
+When user input arrives in hands-free mode, Nico calls a takeover path (`Ctrl+T`, `Ctrl+B`, or typed keys) that stops interval updates, marks takeover, and optionally unregisters session ownership before continuing input passthrough.
+
+## Component Composition Patterns
+
+### Dialog pattern
+
+Standard dialog shape with rounded border and keyboard hints:
+
+```typescript
+class DialogComponent implements Component, Focusable {
+  focused = false;
+  constructor(private tui: any, private theme: Theme, private done: () => void) {}
+
+  render(width: number): string[] {
+    const inner = Math.max(20, width - 2);
+    const lines = [
+      `╭${"─".repeat(Math.max(0, inner - 20))} Dialog Header ${"─".repeat(Math.max(0, inner - 20))}╮`,
+      `│ Content line 1...                                                                  │`,
+      `├${"─".repeat(inner)}┤`,
+      `│ Press \u2191\u2193 navigate • enter confirm • esc cancel                         │`,
+      `╰${"─".repeat(inner)}╯`,
+    ];
+    return lines.map((line) => truncateToWidth(line, width));
+  }
+
+  handleInput(data: string) {
+    if (matchesKey(data, "escape")) this.done();
+  }
+
+  invalidate() {}
+  dispose() {}
+}
+```
+
+Use this exact composition for confirmations, unqueue prompts, and palette actions.
+
+### Fuzzy filter list
+
+Nico-style list filtering is consistently:
+- filter on every typed character
+- reset selection to top on filter changes
+- maintain `selectedIndex` and `scrollOffset`
+- show scroll/selection state via compact progress indicator
+
+```typescript
+class FuzzyListComponent implements Component, Focusable {
+  focused = false;
+  private query = "";
+  private selectedIndex = 0;
+  private scrollOffset = 0;
+  private maxVisible = 8;
+  private filtered = this.items;
+
+  constructor(private items: Array<{ name: string; description: string; model?: string }>) {}
+
+  handleInput(data: string): void {
+    if (matchesKey(data, "up") && this.selectedIndex > 0) this.selectedIndex--;
+    else if (matchesKey(data, "down") && this.selectedIndex < this.filtered.length - 1) this.selectedIndex++;
+    else if (data.length === 1 && data.charCodeAt(0) >= 32) this.query += data;
+    else if (matchesKey(data, "backspace")) this.query = this.query.slice(0, -1);
+
+    this.filtered = fuzzyFilter(this.items, this.query);
+    this.selectedIndex = 0;
+    const maxStart = Math.max(0, this.filtered.length - this.maxVisible);
+    this.scrollOffset = Math.min(this.scrollOffset, maxStart);
+  }
+
+  render(width: number): string[] {
+    const lines = [];
+    const start = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), this.filtered.length - this.maxVisible));
+    const end = Math.min(start + this.maxVisible, this.filtered.length);
+
+    for (let i = start; i < end; i++) {
+      const item = this.filtered[i];
+      const selected = i === this.selectedIndex ? "▸" : "·";
+      lines.push(`${selected} ${item.name} ${item.description ?? ""}`);
+    }
+
+    if (this.filtered.length > this.maxVisible) {
+      lines.push(`${this.selectedIndex + 1}/${this.filtered.length}`);
+    }
+    return lines;
+  }
+
+  invalidate() {}
+  dispose() {}
+}
+```
+
+### Segment-based rendering
+
+Powerline-style status bars are easiest as independent segment objects:
+
+```typescript
+interface RenderedSegment {
+  content: string;
+  visible: boolean;
+}
+
+interface StatusLineSegment {
+  id: string;
+  render(ctx: any): RenderedSegment;
+}
+
+const SEGMENTS: Record<string, StatusLineSegment> = {
+  model: {
+    id: "model",
+    render(ctx) {
+      if (!ctx.model?.name) return { content: "", visible: false };
+      return { content: `🤖 ${ctx.model.name}`, visible: true };
+    },
+  },
+  git: {
+    id: "git",
+    render(ctx) {
+      if (!ctx.git?.branch) return { content: "", visible: false };
+      return { content: ` ${ctx.git.branch}`, visible: true };
+    },
+  },
+};
+
+function renderSegment(id: string, ctx: any): RenderedSegment {
+  return SEGMENTS[id]?.render(ctx) ?? { content: "", visible: false };
+}
+```
+
+Render each segment independently, then join with semantic separators; each segment decides its own visibility (`visible: false` when empty).
+
 ## Copy-Paste Examples
 
 See [references/examples.md](references/examples.md) for complete, self-contained component implementations:
