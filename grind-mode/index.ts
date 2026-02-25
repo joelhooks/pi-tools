@@ -104,9 +104,8 @@ export default function grindMode(pi: ExtensionAPI) {
               .trim()
           : "";
 
-    const hasToolCalls =
-      Array.isArray(lastMsg?.content) &&
-      lastMsg.content.some?.((p: any) => p.type === "tool-call");
+    const contentArr = Array.isArray(lastMsg?.content) ? lastMsg.content : [];
+    const hasToolCalls = contentArr.some((p: any) => p.type === "tool-call");
 
     if (!hasToolCalls && lastText.length < 10) {
       noOpCount++;
