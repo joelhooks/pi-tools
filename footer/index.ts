@@ -92,7 +92,9 @@ export default function footer(pi: ExtensionAPI) {
           const isSub = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
           if (cost || isSub) left.push(`$${cost.toFixed(3)}${isSub ? " (sub)" : ""}`);
 
-          const ctxUsage = ctx.getContextUsage();
+          // Wrapped — estimateTokens can throw on malformed message.content
+          let ctxUsage: ReturnType<typeof ctx.getContextUsage> | undefined;
+          try { ctxUsage = ctx.getContextUsage(); } catch {}
           const ctxWindow = ctxUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
           const ctxPct = ctxUsage?.percent ?? 0;
           const ctxDisplay = ctxUsage?.percent !== null
