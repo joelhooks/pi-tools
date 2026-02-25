@@ -666,8 +666,9 @@ export default function (pi: ExtensionAPI) {
             statsParts.push(costStr);
           }
 
-          // Context usage
-          const contextUsage = ctx.getContextUsage();
+          // Context usage (wrapped — pi core estimateTokens can throw on malformed messages)
+          let contextUsage: ReturnType<typeof ctx.getContextUsage> | undefined;
+          try { contextUsage = ctx.getContextUsage(); } catch {}
           const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
           const contextPercentValue = contextUsage?.percent ?? 0;
           const contextPercentDisplay = contextUsage?.percent !== null
