@@ -64,74 +64,73 @@ export default function grindMode(pi: ExtensionAPI) {
 
   // ── agent_end: auto-compact + auto-continue ─────────────────
   pi.on("agent_end", async (_event, ctx) => {
-    // Auto-compact at threshold (fires whether grind is on or not)
-    // Wrapped — pi core estimateTokens can throw on malformed messages
-    let usage: ReturnType<typeof ctx.getContextUsage> | undefined;
-    try { usage = ctx.getContextUsage(); } catch {}
-    if (usage && usage.percent !== null && usage.percent > COMPACT_THRESHOLD) {
-      const pct = Math.round(usage.percent);
-      ctx.compact({
-        customInstructions: COMPACT_INSTRUCTIONS,
-        onComplete: () => {
-          pi.sendMessage(
-            {
-              customType: "grind-compacted",
-              content: `🔄 Auto-compacted at ${pct}% context. Continuing where we left off.`,
-              display: false,
-            },
-            { triggerTurn: true, deliverAs: "followUp" },
-          );
-        },
-      });
-      return; // compact triggers its own continuation
-    }
-
-    // Auto-continue only if grind is active
-    if (!active) return;
-
-    // No-op detection: count consecutive turns with no tool calls and short text
-    const msgs = (_event as any)?.messages;
-    const lastMsg = Array.isArray(msgs)
-      ? msgs.filter((m: any) => m.role === "assistant").at(-1)
-      : undefined;
-
-    const lastText =
-      typeof lastMsg?.content === "string"
-        ? lastMsg.content.trim()
-        : Array.isArray(lastMsg?.content)
-          ? lastMsg.content
-              .filter((p: any) => p.type === "text")
-              .map((p: any) => p.text)
-              .join("")
-              .trim()
-          : "";
-
-    const contentArr = Array.isArray(lastMsg?.content) ? lastMsg.content : [];
-    const hasToolCalls = contentArr.some((p: any) => p.type === "tool-call");
-
-    if (!hasToolCalls && lastText.length < 10) {
-      noOpCount++;
-      if (noOpCount >= MAX_NOOPS) {
-        active = false;
-        noOpCount = 0;
-        ctx.ui.setStatus("grind", undefined);
-        ctx.ui.notify(
-          `⏸️ Grind auto-stopped: no work for ${MAX_NOOPS} turns`,
-          "warning",
-        );
-        return;
+    try {
+      // Auto-compact at threshold (fires whether grind is on or not)
+      let usage: ReturnType<typeof ctx.getContextUsage> | undefined;
+      try { usage = ctx.getContextUsage(); } catch {}
+      if (usage && usage.percent !== null && usage.percent > COMPACT_THRESHOLD) {
+        const pct = Math.round(usage.percent);
+        ctx.compact({
+          customInstructions: COMPACT_INSTRUCTIONS,
+          onComplete: () => {
+            pi.sendMessage(
+              {
+                customType: "grind-compacted",
+                content: `🔄 Auto-compacted at ${pct}% context. Continuing where we left off.`,
+                display: false,
+              },
+              { triggerTurn: true, deliverAs: "followUp" },
+            );
+          },
+        });
+        return; // compact triggers its own continuation
       }
-    } else {
-      noOpCount = 0;
-    }
 
-    pi.sendMessage(
-      {
-        customType: "grind-continue",
-        content: CONTINUE_PROMPT,
-        display: false,
-      },
-      { triggerTurn: true, deliverAs: "followUp" },
-    );
+      // Auto-continue only if grind is active
+      if (!active) return;
+
+      // No-op detection: count consecutive turns with no tool calls and short text
+      const msgs = (_event as any)?.messages;
+      const lastMsg = Array.isArray(msgs)
+        ? msgs.filter((m: any) => m.role === "assistant").at(-1)
+        : undefined;
+
+      const contentArr = Array.isArray(lastMsg?.content) ? lastMsg.content : [];
+
+      const lastText = contentArr
+        .filter((p: any) => p.type === "text")
+        .map((p: any) => p.text ?? "")
+        .join("")
+        .trim();
+
+      const hasToolCalls = contentArr.some((p: any) => p.type === "tool-call");
+
+      if (!hasToolCalls && lastText.length < 10) {
+        noOpCount++;
+        if (noOpCount >= MAX_NOOPS) {
+          active = false;
+          noOpCount = 0;
+          ctx.ui.setStatus("grind", undefined);
+          ctx.ui.notify(
+            `⏸️ Grind auto-stopped: no work for ${MAX_NOOPS} turns`,
+            "warning",
+          );
+          return;
+        }
+      } else {
+        noOpCount = 0;
+      }
+
+      pi.sendMessage(
+        {
+          customType: "grind-continue",
+          content: CONTINUE_PROMPT,
+          display: false,
+        },
+        { triggerTurn: true, deliverAs: "followUp" },
+      );
+    } catch {
+      // Swallow — don't crash pi on malformed event data
+    }
   });
 }
