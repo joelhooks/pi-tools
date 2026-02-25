@@ -38,7 +38,7 @@ export default function grindMode(pi: ExtensionAPI) {
 
       if (active) {
         ctx.ui.notify("🔥 Grind mode ON", "info");
-        ctx.ui.setStatus("grind", "🔥 GRIND");
+        ctx.ui.setStatus("grind", "🔥");
       } else {
         ctx.ui.notify("⏸️ Grind mode OFF", "info");
         ctx.ui.setStatus("grind", undefined);
