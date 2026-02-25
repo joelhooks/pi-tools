@@ -22,8 +22,6 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
@@ -239,7 +237,7 @@ class McpOAuthProvider implements OAuthClientProvider {
 
 export default function (pi: ExtensionAPI) {
   const states = new Map<string, ServerState>();
-  let _footerTui: { requestRender: () => void } | undefined;
+  let _ctx: ExtensionContext | undefined;
 
   function text(s: string) {
     return { content: [{ type: "text" as const, text: s }], details: {} };
@@ -249,19 +247,16 @@ export default function (pi: ExtensionAPI) {
     return s.length > max ? s.slice(0, max) + "\n\n... (truncated)" : s;
   }
 
-  /** Trigger a footer re-render (e.g. when mcp connection state changes). */
+  /** Update mcp status in the footer via setStatus (composable with footer extension). */
   function refreshFooter() {
-    _footerTui?.requestRender();
-  }
-
-  /** Build the mcp label for the footer, e.g. "mcp 1/2". Empty string if no servers. */
-  function getMcpLabel(): string {
+    if (!_ctx) return;
     const servers = loadServers();
-    if (servers.length === 0) return "";
-    const connected = servers.filter(
-      (s) => states.get(s.name)?.connected
-    ).length;
-    return `mcp ${connected}/${servers.length}`;
+    if (servers.length === 0) {
+      _ctx.ui.setStatus("mcp", undefined);
+      return;
+    }
+    const connected = servers.filter((s) => states.get(s.name)?.connected).length;
+    _ctx.ui.setStatus("mcp", `mcp ${connected}/${servers.length}`);
   }
 
   /**
@@ -589,158 +584,9 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  // ── Custom footer with mcp status ───────────────────────────────
-  function installFooter(ctx: ExtensionContext) {
-    ctx.ui.setFooter((tui, theme, footerData) => {
-      _footerTui = tui;
-      const unsub = footerData.onBranchChange(() => tui.requestRender());
-
-      return {
-        dispose: unsub,
-        invalidate() {},
-        render(width: number): string[] {
-          // ── Line 1: [mcp N/M]  ~/path (branch) [• session] ──
-          let pwd = process.cwd();
-          const home = process.env.HOME || process.env.USERPROFILE;
-          if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
-          const branch = footerData.getGitBranch();
-          if (branch) pwd = `${pwd} (${branch})`;
-          const sessionName = ctx.sessionManager.getSessionName();
-          if (sessionName) pwd = `${pwd} • ${sessionName}`;
-
-          const mcpLabel = getMcpLabel();
-          // Collect extension statuses (e.g. grind mode 🔥)
-          const extStatuses = [...footerData.getExtensionStatuses().values()].filter(Boolean).join(" ");
-          const rightParts = [extStatuses, mcpLabel].filter(Boolean).join("  ");
-          let line1: string;
-          if (rightParts) {
-            const pwdWidth = visibleWidth(pwd);
-            const rightWidth = visibleWidth(rightParts);
-            const gap = width - pwdWidth - rightWidth;
-            if (gap >= 2) {
-              line1 = pwd + " ".repeat(gap) + rightParts;
-            } else {
-              // Not enough room — truncate pwd to make space
-              const maxPwd = width - rightWidth - 2;
-              line1 = maxPwd > 3
-                ? truncateToWidth(pwd, maxPwd) + "  " + rightParts
-                : truncateToWidth(pwd, width);
-            }
-          } else {
-            line1 = truncateToWidth(pwd, width);
-          }
-
-          // ── Line 2: token stats + context + model ──
-          let totalInput = 0, totalOutput = 0;
-          let totalCacheRead = 0, totalCacheWrite = 0, totalCost = 0;
-          let thinkingLevel = "off";
-          for (const entry of ctx.sessionManager.getEntries()) {
-            if (entry.type === "message" && (entry as any).message?.role === "assistant") {
-              const m = (entry as any).message as AssistantMessage;
-              totalInput += m.usage.input;
-              totalOutput += m.usage.output;
-              totalCacheRead += m.usage.cacheRead;
-              totalCacheWrite += m.usage.cacheWrite;
-              totalCost += m.usage.cost.total;
-            } else if ((entry as any).type === "thinking_level_change") {
-              thinkingLevel = (entry as any).thinkingLevel;
-            }
-          }
-
-          const fmt = (n: number) => {
-            if (n < 1000) return n.toString();
-            if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
-            if (n < 1000000) return `${Math.round(n / 1000)}k`;
-            if (n < 10000000) return `${(n / 1000000).toFixed(1)}M`;
-            return `${Math.round(n / 1000000)}M`;
-          };
-
-          const statsParts: string[] = [];
-          if (totalInput) statsParts.push(`↑${fmt(totalInput)}`);
-          if (totalOutput) statsParts.push(`↓${fmt(totalOutput)}`);
-          if (totalCacheRead) statsParts.push(`R${fmt(totalCacheRead)}`);
-          if (totalCacheWrite) statsParts.push(`W${fmt(totalCacheWrite)}`);
-
-          const usingSubscription = ctx.model
-            ? ctx.modelRegistry.isUsingOAuth(ctx.model)
-            : false;
-          if (totalCost || usingSubscription) {
-            const costStr = `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
-            statsParts.push(costStr);
-          }
-
-          // Context usage
-          const contextUsage = ctx.getContextUsage();
-          const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
-          const contextPercentValue = contextUsage?.percent ?? 0;
-          const contextPercentDisplay = contextUsage?.percent !== null
-            ? `${contextPercentValue.toFixed(1)}%/${fmt(contextWindow)} (auto)`
-            : `?/${fmt(contextWindow)} (auto)`;
-          let contextPercentStr: string;
-          if (contextPercentValue > 90) {
-            contextPercentStr = theme.fg("error", contextPercentDisplay);
-          } else if (contextPercentValue > 70) {
-            contextPercentStr = theme.fg("warning", contextPercentDisplay);
-          } else {
-            contextPercentStr = contextPercentDisplay;
-          }
-          statsParts.push(contextPercentStr);
-
-          let statsLeft = statsParts.join(" ");
-          let statsLeftWidth = visibleWidth(statsLeft);
-          if (statsLeftWidth > width) {
-            statsLeft = truncateToWidth(statsLeft, width);
-            statsLeftWidth = visibleWidth(statsLeft);
-          }
-
-          // Right side: model + thinking level
-          const modelName = ctx.model?.id || "no-model";
-          let rightSideBase = modelName;
-          if (ctx.model?.reasoning) {
-            rightSideBase = thinkingLevel === "off"
-              ? `${modelName} • thinking off`
-              : `${modelName} • ${thinkingLevel}`;
-          }
-
-          // Add provider prefix if multiple providers
-          let rightSide = rightSideBase;
-          if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
-            const withProvider = `(${ctx.model.provider}) ${rightSideBase}`;
-            if (statsLeftWidth + 2 + visibleWidth(withProvider) <= width) {
-              rightSide = withProvider;
-            }
-          }
-
-          const rightSideWidth = visibleWidth(rightSide);
-          const minPadding = 2;
-          let statsLine: string;
-          if (statsLeftWidth + minPadding + rightSideWidth <= width) {
-            const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-            statsLine = statsLeft + padding + rightSide;
-          } else {
-            const avail = width - statsLeftWidth - minPadding;
-            if (avail > 3) {
-              const truncRight = truncateToWidth(rightSide, avail);
-              const padding = " ".repeat(width - statsLeftWidth - visibleWidth(truncRight));
-              statsLine = statsLeft + padding + truncRight;
-            } else {
-              statsLine = statsLeft;
-            }
-          }
-
-          const dimStatsLeft = theme.fg("dim", statsLeft);
-          const remainder = statsLine.slice(statsLeft.length);
-          const dimRemainder = theme.fg("dim", remainder);
-
-          return [theme.fg("dim", line1), dimStatsLeft + dimRemainder];
-        },
-      };
-    });
-  }
-
   // ── Auto-connect on session start ─────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
-    installFooter(ctx);
+    _ctx = ctx;
 
     const servers = loadServers();
     if (servers.length === 0) return;
