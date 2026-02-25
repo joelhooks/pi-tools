@@ -65,7 +65,9 @@ export default function grindMode(pi: ExtensionAPI) {
   // ── agent_end: auto-compact + auto-continue ─────────────────
   pi.on("agent_end", async (_event, ctx) => {
     // Auto-compact at threshold (fires whether grind is on or not)
-    const usage = ctx.getContextUsage();
+    // Wrapped — pi core estimateTokens can throw on malformed messages
+    let usage: ReturnType<typeof ctx.getContextUsage> | undefined;
+    try { usage = ctx.getContextUsage(); } catch {}
     if (usage && usage.percent !== null && usage.percent > COMPACT_THRESHOLD) {
       const pct = Math.round(usage.percent);
       ctx.compact({
