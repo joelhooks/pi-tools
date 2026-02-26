@@ -11,7 +11,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@sinclair/typebox": "^0.34.33",
-    "ioredis": "^5.6.1"
+    "ioredis": "^5.6.1",
+    "langfuse": "^3.38.6"
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "~0.52.12",
