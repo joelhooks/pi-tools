@@ -105,6 +105,7 @@ export default function (pi: ExtensionAPI) {
   let flushTimer: ReturnType<typeof setInterval> | undefined;
   const turnUsages = new Map<number, AggregatedUsage>();
   let activeTurnIndex = 0;
+  let lastUserInput: string | undefined;
 
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
   const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -148,6 +149,22 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("message_start", (event, _ctx) => {
+    try {
+      const message = event.message;
+      if (!message || typeof message !== "object") return;
+      if ((message as { role?: unknown }).role !== "user") return;
+
+      const content = (message as { content?: unknown }).content;
+      const extracted = extractText(content);
+      if (extracted !== undefined) {
+        lastUserInput = extracted;
+      }
+    } catch {
+      // ignore
+    }
+  });
+
   pi.on("message_end", (event, ctx) => {
     if (!langfuse) return;
 
@@ -170,6 +187,7 @@ export default function (pi: ExtensionAPI) {
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const output = extractText((message as { content?: unknown }).content);
+      const input = lastUserInput;
 
       const turnIndex =
         typeof (event as { turnIndex?: unknown }).turnIndex === "number"
@@ -182,7 +200,7 @@ export default function (pi: ExtensionAPI) {
       const trace = langfuse.trace({
         name: "joelclaw.session.call",
         sessionId: sessionId ?? undefined,
-        input: output,
+        input,
         output,
         tags: TRACE_TAGS,
         metadata: {
@@ -204,7 +222,7 @@ export default function (pi: ExtensionAPI) {
       trace.generation({
         name: "session.call",
         model: ctx.model?.id,
-        input: undefined,
+        input,
         output,
         usage: {
           input: usage.input,
@@ -257,6 +275,7 @@ export default function (pi: ExtensionAPI) {
       if (turnAggregate.messageCount === 0) {
         turnUsages.delete(turnIndex);
         activeTurnIndex = turnIndex + 1;
+        lastUserInput = undefined;
         return;
       }
 
@@ -273,10 +292,12 @@ export default function (pi: ExtensionAPI) {
         typeof (event as { stopReason?: unknown }).stopReason === "string"
           ? (event as { stopReason?: string }).stopReason
           : undefined;
+      const input = lastUserInput;
 
       const trace = langfuse.trace({
         name: "joelclaw.session.turn",
         sessionId: sessionId ?? undefined,
+        input,
         output: turnOutput,
         tags: TRACE_TAGS,
         metadata: {
@@ -300,6 +321,7 @@ export default function (pi: ExtensionAPI) {
       trace.generation({
         name: "session.turn",
         model: ctx.model?.id,
+        input,
         usage: {
           input: turnAggregate.input,
           output: turnAggregate.output,
@@ -324,6 +346,7 @@ export default function (pi: ExtensionAPI) {
       if (turnIndex >= 0) {
         activeTurnIndex = turnIndex + 1;
       }
+      lastUserInput = undefined;
     } catch (error) {
       console.error("langfuse-cost: Failed to process turn_end", error);
     }
