@@ -38,7 +38,8 @@
       "./inbox-watcher/index.ts",
       "./memory-rag/index.ts",
       "./url-to-markdown/index.ts",
-      "./bash-timeout/index.ts"
+      "./bash-timeout/index.ts",
+      "./langfuse-cost/index.ts"
     ]
   }
 }
