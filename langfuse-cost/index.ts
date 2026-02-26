@@ -181,8 +181,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", (event, _ctx) => {
     try {
       const message = event.message;
-      if (!message || typeof message !== "object") return;
+      if (!message || typeof message !== "object") {
+        console.error(`[langfuse-cost] message_start: no message object`);
+        return;
+      }
       const role = (message as { role?: unknown }).role;
+      console.error(`[langfuse-cost] message_start role=${role}`);
       if (role === "assistant") {
         lastAssistantStartTime = Date.now();
         return;
@@ -207,7 +211,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event, ctx) => {
-    if (!langfuse) return;
+    if (!langfuse) {
+      console.error(`[langfuse-cost] message_end: langfuse is null!`);
+      return;
+    }
 
     try {
       if (!sessionId) {
@@ -230,6 +237,7 @@ export default function (pi: ExtensionAPI) {
       const content = (message as { content?: unknown }).content;
       const output = extractText(content) || extractToolNames(content);
       const input = lastUserInput ?? (stopReason === "toolUse" ? "[tool continuation]" : undefined);
+      console.error(`[langfuse-cost] message_end: input=${input?.slice(0,40)}... output=${output?.slice(0,40)}... stop=${stopReason}`);
       // Clear after use to prevent stale input bleeding into next call
       lastUserInput = undefined;
       const completionStartTime = lastAssistantStartTime
