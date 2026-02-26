@@ -92,11 +92,33 @@ function extractToolResultSummary(content: unknown): string | undefined {
   return results > 0 ? `[${results} tool result(s)]` : undefined;
 }
 
+/** Strip ---\nChannel:...\n--- header from input, return clean text + parsed metadata */
+function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<string, string> } {
+  const headerMatch = text.match(/^---\n([\s\S]*?)\n---\n*/);
+  if (!headerMatch) return { clean: text };
+
+  const headerBlock = headerMatch[1];
+  const meta: Record<string, string> = {};
+
+  for (const line of headerBlock.split("\n")) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx > 0) {
+      const key = line.slice(0, colonIdx).trim().toLowerCase().replace(/\s+/g, "_");
+      const value = line.slice(colonIdx + 1).trim();
+      if (key && value) meta[key] = value;
+    }
+  }
+
+  const clean = text.slice(headerMatch[0].length).trim();
+  return { clean, headerMeta: Object.keys(meta).length > 0 ? meta : undefined };
+}
+
 
 export default function (pi: ExtensionAPI) {
   let langfuse: Langfuse | null = null;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
   let lastUserInput: string | undefined;
+  let lastInputHeaderMeta: Record<string, string> | undefined;
   let lastAssistantStartTime: number | undefined;
 
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
@@ -157,7 +179,9 @@ export default function (pi: ExtensionAPI) {
       const content = (message as { content?: unknown }).content;
       const extracted = extractText(content);
       if (extracted !== undefined) {
-        lastUserInput = extracted;
+        const { clean, headerMeta } = stripChannelHeader(extracted);
+        lastUserInput = clean || extracted;
+        lastInputHeaderMeta = headerMeta;
       } else {
         const toolSummary = extractToolResultSummary(content);
         if (toolSummary !== undefined) {
@@ -227,6 +251,7 @@ export default function (pi: ExtensionAPI) {
           totalTokens: usage.totalTokens,
           cacheReadTokens: usage.cacheRead,
           cacheWriteTokens: usage.cacheWrite,
+          ...(lastInputHeaderMeta ? { sourceChannel: lastInputHeaderMeta } : {}),
         },
       });
 
@@ -258,6 +283,7 @@ export default function (pi: ExtensionAPI) {
       generation.end();
 
       lastAssistantStartTime = undefined;
+      lastInputHeaderMeta = undefined;
     } catch (error) {
       console.error("langfuse-cost: Failed to process message_end", error);
     }
