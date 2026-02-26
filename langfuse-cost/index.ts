@@ -114,11 +114,14 @@ function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<
 }
 
 
-let _instanceCount = 0;
+const GLOBAL_KEY = "__langfuse_cost_loaded__";
 
 export default function (pi: ExtensionAPI) {
-  _instanceCount++;
-  console.warn(`langfuse-cost: INIT instance #${_instanceCount}`);
+  if ((globalThis as any)[GLOBAL_KEY]) {
+    console.warn("langfuse-cost: skipping duplicate instance (already loaded)");
+    return;
+  }
+  (globalThis as any)[GLOBAL_KEY] = true;
   let langfuse: Langfuse | null = null;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
   let lastUserInput: string | undefined;
