@@ -1,7 +1,7 @@
 {
   "name": "pi-tools",
   "version": "0.4.0",
-  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search, memory RAG, url-to-markdown",
+  "description": "Joel's pi extensions — repo autopsy, ts-check, codex-exec, session reader, session lifecycle, skill shortcuts, MCQ, MCP bridge, auto-update, web search, memory RAG, url-to-markdown, grind mode",
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -39,6 +39,7 @@
       "./memory-rag/index.ts",
       "./url-to-markdown/index.ts",
       "./bash-timeout/index.ts",
+      "./grind-mode/index.ts",
       "./langfuse-cost/index.ts"
     ]
   }

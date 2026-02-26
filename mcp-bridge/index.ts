@@ -46,6 +46,7 @@ interface ServerConfig {
   name: string;
   url: string;
   port: number; // Callback port for OAuth
+  local?: boolean; // Local server — no OAuth needed
 }
 
 interface ServerState {
@@ -333,6 +334,53 @@ export default function (pi: ExtensionAPI) {
     const existing = states.get(config.name);
     if (existing?.connected) return true;
 
+    // Local servers: connect without OAuth
+    if (config.local) {
+      try {
+        const transport = new StreamableHTTPClientTransport(new URL(config.url));
+        const client = new Client({
+          name: `pi-mcp-bridge-${config.name}`,
+          version: "1.0.0",
+        });
+
+        await client.connect(transport);
+
+        const { tools } = await client.listTools();
+        const toolNames: string[] = [];
+
+        for (const tool of tools) {
+          const name = registerMcpTool(
+            config.name,
+            tool,
+            () => states.get(config.name)?.client ?? null,
+            () => states.get(config.name)?.connected ?? false
+          );
+          toolNames.push(name);
+        }
+
+        states.set(config.name, {
+          client,
+          transport,
+          connected: true,
+          tools: toolNames,
+        });
+
+        refreshFooter();
+        return true;
+      } catch (err: any) {
+        states.set(config.name, {
+          client: null,
+          transport: null,
+          connected: false,
+          tools: [],
+        });
+        ctx?.ui.notify(`MCP ${config.name}: ${err.message}`, "error");
+        refreshFooter();
+        return false;
+      }
+    }
+
+    // Remote servers: require OAuth tokens
     const authProvider = new McpOAuthProvider(config.name, config.port);
     const tokens = authProvider.tokens();
     if (!tokens) return false;
@@ -618,8 +666,9 @@ export default function (pi: ExtensionAPI) {
             statsParts.push(costStr);
           }
 
-          // Context usage
-          const contextUsage = ctx.getContextUsage();
+          // Context usage (wrapped — pi core estimateTokens can throw on malformed messages)
+          let contextUsage: ReturnType<typeof ctx.getContextUsage> | undefined;
+          try { contextUsage = ctx.getContextUsage(); } catch {}
           const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
           const contextPercentValue = contextUsage?.percent ?? 0;
           const contextPercentDisplay = contextUsage?.percent !== null
@@ -720,15 +769,18 @@ export default function (pi: ExtensionAPI) {
   // ── Commands ──────────────────────────────────────────────────────
 
   pi.registerCommand("mcp-add", {
-    description: "Add an MCP server: /mcp-add <name> <url>",
+    description: "Add an MCP server: /mcp-add [--local] <name> <url>",
     handler: async (args, ctx) => {
       const parts = (args || "").trim().split(/\s+/);
-      if (parts.length < 2) {
-        ctx.ui.notify("Usage: /mcp-add <name> <url>", "error");
+      const isLocal = parts.includes("--local");
+      const filtered = parts.filter((p) => p !== "--local");
+
+      if (filtered.length < 2) {
+        ctx.ui.notify("Usage: /mcp-add [--local] <name> <url>", "error");
         return;
       }
 
-      const [name, url] = parts;
+      const [name, url] = filtered;
       const servers = loadServers();
 
       if (servers.find((s) => s.name === name)) {
@@ -736,14 +788,21 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const config: ServerConfig = { name, url, port: nextPort() };
+      const config: ServerConfig = { name, url, port: nextPort(), ...(isLocal ? { local: true } : {}) };
       servers.push(config);
       saveServers(servers);
 
-      ctx.ui.notify(
-        `Added ${name} → ${url} (port ${config.port}). Run /mcp-login ${name} to authenticate.`,
-        "info"
-      );
+      if (isLocal) {
+        ctx.ui.notify(
+          `Added local ${name} → ${url}. Run /mcp-reconnect ${name} to connect.`,
+          "info"
+        );
+      } else {
+        ctx.ui.notify(
+          `Added ${name} → ${url} (port ${config.port}). Run /mcp-login ${name} to authenticate.`,
+          "info"
+        );
+      }
     },
   });
 
