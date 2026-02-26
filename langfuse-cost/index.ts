@@ -1,4 +1,5 @@
 import Langfuse from "langfuse";
+import type { LangfuseTraceClient, LangfuseSpanClient } from "langfuse";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 type UsageLike = {
@@ -9,7 +10,7 @@ type UsageLike = {
   totalTokens: number;
 };
 
-type SessionType = "gateway" | "interactive" | "codex";
+type SessionType = "gateway" | "interactive" | "codex" | "central";
 
 const CHANNEL = process.env.GATEWAY_ROLE || process.env.JOELCLAW_CHANNEL || "interactive";
 const SESSION_TYPE = getSessionType(CHANNEL);
@@ -104,13 +105,11 @@ function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<
   const meta: Record<string, string> = {};
 
   for (const line of headerBlock.split("\n")) {
-    // Skip continuation lines (start with - or whitespace followed by -)
     if (/^\s*-/.test(line)) continue;
     const colonIdx = line.indexOf(":");
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim().toLowerCase().replace(/\s+/g, "_");
       const value = line.slice(colonIdx + 1).trim();
-      // Only capture known single-value keys; skip multi-line keys like "formatting_guide"
       if (key && value && HEADER_KEYS.has(key)) meta[key] = value;
     }
   }
@@ -130,10 +129,24 @@ export default function (pi: ExtensionAPI) {
   (globalThis as any)[GLOBAL_KEY] = true;
   let langfuse: Langfuse | null = null;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
+
+  // --- Span hierarchy state ---
+  // Session trace: one per pi session lifetime
+  let sessionTrace: LangfuseTraceClient | null = null;
+  let sessionSpan: LangfuseSpanClient | null = null;
+  let sessionStartTime: Date | null = null;
+  let sessionTurnCount = 0;
+
+  // Message span: one per user→assistant exchange
+  let messageSpan: LangfuseSpanClient | null = null;
+  let messageStartTime: Date | null = null;
   let lastUserInput: string | undefined;
   let lastInputHeaderMeta: Record<string, string> | undefined;
   let lastAssistantStartTime: number | undefined;
+
+  // Tool spans: one per tool_call→tool_result
   let pendingToolNames: string[] = [];
+  let activeToolSpans: Map<string, LangfuseSpanClient> = new Map();
 
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
   const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -169,26 +182,60 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // ─── SESSION SPAN ───────────────────────────────────────────────
   pi.on("session_start", (_event, ctx) => {
     try {
       sessionId = ctx.sessionManager.getSessionId() ?? null;
+      if (!langfuse || !sessionId) return;
+
+      sessionStartTime = new Date();
+      sessionTurnCount = 0;
+
+      sessionTrace = langfuse.trace({
+        name: "joelclaw.session",
+        userId: "joel",
+        sessionId,
+        tags: getTraceTags(ctx.model),
+        metadata: {
+          channel: CHANNEL,
+          sessionType: SESSION_TYPE,
+          component: "pi-session",
+          model: ctx.model?.id,
+          provider: ctx.model?.provider,
+        },
+      });
+
+      sessionSpan = sessionTrace.span({
+        name: "session",
+        startTime: sessionStartTime,
+        metadata: {
+          channel: CHANNEL,
+          sessionType: SESSION_TYPE,
+        },
+      });
     } catch {
       // ignore
     }
   });
 
+  // ─── MESSAGE SPAN ──────────────────────────────────────────────
   pi.on("message_start", (event, _ctx) => {
     try {
       const message = event.message;
-      if (!message || typeof message !== "object") {
-        return;
-      }
+      if (!message || typeof message !== "object") return;
+
       const role = (message as { role?: unknown }).role;
+
       if (role === "assistant") {
         lastAssistantStartTime = Date.now();
         return;
       }
+
       if (role !== "user") return;
+
+      // Start a new message span for this user→assistant exchange
+      messageStartTime = new Date();
+      const parentSpan = sessionSpan || sessionTrace;
 
       const content = (message as { content?: unknown }).content;
       const extracted = extractText(content);
@@ -202,99 +249,131 @@ export default function (pi: ExtensionAPI) {
           lastUserInput = toolSummary;
         }
       }
-    } catch {
-      // ignore
-    }
-  });
 
-  pi.on("tool_call", (event, _ctx) => {
-    try {
-      const toolName = (event as any)?.toolName;
-      if (typeof toolName === "string" && toolName) {
-        pendingToolNames.push(toolName);
+      if (parentSpan && langfuse) {
+        // End previous message span if still open (shouldn't happen, but safety)
+        if (messageSpan) {
+          try { messageSpan.end(); } catch { /* ignore */ }
+        }
+
+        sessionTurnCount++;
+        messageSpan = parentSpan.span({
+          name: `turn-${sessionTurnCount}`,
+          startTime: messageStartTime,
+          input: lastUserInput,
+          metadata: {
+            turnIndex: sessionTurnCount,
+            ...(lastInputHeaderMeta ? { sourceChannel: lastInputHeaderMeta } : {}),
+          },
+        });
       }
     } catch {
       // ignore
     }
   });
 
-  pi.on("message_end", (event, ctx) => {
-    if (!langfuse) {
-      console.warn("langfuse-cost: langfuse is null, skipping tracing");
-      return;
+  // ─── TOOL SPANS ────────────────────────────────────────────────
+  pi.on("tool_call", (event, _ctx) => {
+    try {
+      const toolName = (event as any)?.toolName;
+      const toolCallId = (event as any)?.toolCallId;
+      if (typeof toolName === "string" && toolName) {
+        pendingToolNames.push(toolName);
+
+        // Create a child span under the current message span
+        const parent = messageSpan || sessionSpan || sessionTrace;
+        if (parent && typeof toolCallId === "string") {
+          const toolSpan = parent.span({
+            name: `tool:${toolName}`,
+            startTime: new Date(),
+            input: (event as any)?.input,
+            metadata: { toolName, toolCallId },
+          });
+          activeToolSpans.set(toolCallId, toolSpan);
+        }
+      }
+    } catch {
+      // ignore
     }
+  });
+
+  pi.on("tool_result" as any, (event: any, _ctx: any) => {
+    try {
+      const toolCallId = event?.toolCallId ?? event?.toolUseId;
+      if (typeof toolCallId === "string" && activeToolSpans.has(toolCallId)) {
+        const toolSpan = activeToolSpans.get(toolCallId)!;
+        const output = extractText(event?.result ?? event?.content) ?? event?.output;
+        toolSpan.end({
+          output: typeof output === "string" ? output.slice(0, 500) : undefined,
+        });
+        activeToolSpans.delete(toolCallId);
+      }
+    } catch {
+      // ignore
+    }
+  });
+
+  // ─── GENERATION (LLM CALL) ────────────────────────────────────
+  pi.on("message_end", (event, ctx) => {
+    if (!langfuse) return;
 
     try {
       if (!sessionId) {
         try {
           sessionId = ctx.sessionManager.getSessionId() ?? null;
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
 
       const message = event.message;
       if (!message || typeof message !== "object") return;
-
       if ((message as { role?: unknown }).role !== "assistant") return;
 
       const usage = asUsage((message as { usage?: unknown }).usage);
       if (!usage) return;
 
-      // Dedup guard — pi fires message_end twice per assistant message
-      // Use usage fingerprint (input+output+total) as dedup key since message has no stable id
-      const usageRaw = (message as { usage?: unknown }).usage;
-      const u = asUsage(usageRaw);
+      // Dedup guard
+      const u = asUsage((message as { usage?: unknown }).usage);
       const dedupKey = u ? `${u.input}-${u.output}-${u.totalTokens}-${u.cacheRead}` : null;
       if (dedupKey && dedupKey === lastTracedMessageId) return;
       if (dedupKey) lastTracedMessageId = dedupKey;
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const content = (message as { content?: unknown }).content;
-      // Prefer tool names accumulated from tool_call events, fall back to content extraction
       const toolNames = pendingToolNames.length > 0 ? [...pendingToolNames] : extractToolNames(content);
       pendingToolNames = [];
+
       const outputText = extractText(content);
       const output =
         outputText ||
         (toolNames.length > 0 ? `[${toolNames.join(", ")}]` : undefined) ||
         (typeof stopReason === "string" ? `[${stopReason}]` : undefined);
       const input = lastUserInput ?? (stopReason === "toolUse" ? "[tool continuation]" : undefined);
-      const turnIndex =
-        typeof (event as { turnIndex?: unknown }).turnIndex === "number"
-          ? Number((event as { turnIndex?: number }).turnIndex)
-          : undefined;
       const completionStartTime = lastAssistantStartTime
         ? new Date(lastAssistantStartTime)
         : undefined;
 
-      const trace = langfuse.trace({
-        name: "joelclaw.session.call",
-        userId: "joel",
-        sessionId: sessionId ?? undefined,
-        input,
-        output,
-        tags: getTraceTags(ctx.model),
-        metadata: {
-          channel: CHANNEL,
-          sessionType: SESSION_TYPE,
-          component: "pi-session",
-          turnIndex,
-          model: ctx.model?.id,
-          provider: ctx.model?.provider,
-          stopReason,
-          inputTokens: usage.input,
-          outputTokens: usage.output,
-          totalTokens: usage.totalTokens,
-          cacheReadTokens: usage.cacheRead,
-          cacheWriteTokens: usage.cacheWrite,
-          ...(lastInputHeaderMeta ? { sourceChannel: lastInputHeaderMeta } : {}),
-          ...(toolNames.length > 0 ? { tools: toolNames } : {}),
-        },
-      });
+      // If no session trace exists (session_start missed), create a standalone trace
+      if (!sessionTrace) {
+        sessionTrace = langfuse.trace({
+          name: "joelclaw.session",
+          userId: "joel",
+          sessionId: sessionId ?? undefined,
+          tags: getTraceTags(ctx.model),
+          metadata: {
+            channel: CHANNEL,
+            sessionType: SESSION_TYPE,
+            component: "pi-session",
+            model: ctx.model?.id,
+            provider: ctx.model?.provider,
+          },
+        });
+      }
 
-      const generation = trace.generation({
-        name: "session.call",
+      // Generation is a child of the message span (or session span)
+      const parent = messageSpan || sessionSpan || sessionTrace;
+
+      const generation = parent.generation({
+        name: "llm.call",
         model: ctx.model?.id,
         input,
         output,
@@ -308,17 +387,33 @@ export default function (pi: ExtensionAPI) {
           cache_write_input_tokens: usage.cacheWrite,
         },
         metadata: {
-          model: ctx.model?.id,
           provider: ctx.model?.provider,
           stopReason,
-          inputTokens: usage.input,
-          outputTokens: usage.output,
-          totalTokens: usage.totalTokens,
-          cacheReadTokens: usage.cacheRead,
-          cacheWriteTokens: usage.cacheWrite,
+          ...(toolNames.length > 0 ? { tools: toolNames } : {}),
         },
       });
       generation.end();
+
+      // Update message span output when we get a text response (end of turn)
+      if (messageSpan && outputText && stopReason !== "toolUse") {
+        messageSpan.end({
+          output: outputText,
+        });
+        messageSpan = null;
+      }
+
+      // Update session trace with latest state
+      sessionTrace.update({
+        output: `${sessionTurnCount} turns`,
+        metadata: {
+          channel: CHANNEL,
+          sessionType: SESSION_TYPE,
+          component: "pi-session",
+          model: ctx.model?.id,
+          provider: ctx.model?.provider,
+          turnCount: sessionTurnCount,
+        },
+      });
 
       lastAssistantStartTime = undefined;
       lastInputHeaderMeta = undefined;
@@ -327,10 +422,44 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // ─── SESSION SHUTDOWN ──────────────────────────────────────────
   pi.on("session_shutdown", async () => {
     if (!langfuse) return;
 
     try {
+      // End any open tool spans
+      activeToolSpans.forEach((span) => {
+        try { span.end(); } catch { /* ignore */ }
+      });
+      activeToolSpans.clear();
+
+      // End message span if open
+      if (messageSpan) {
+        try { messageSpan.end(); } catch { /* ignore */ }
+        messageSpan = null;
+      }
+
+      // End session span
+      if (sessionSpan) {
+        try {
+          sessionSpan.end({
+            output: `${sessionTurnCount} turns`,
+            metadata: { turnCount: sessionTurnCount },
+          });
+        } catch { /* ignore */ }
+        sessionSpan = null;
+      }
+
+      // Final trace update
+      if (sessionTrace) {
+        try {
+          sessionTrace.update({
+            output: `Session ended after ${sessionTurnCount} turns`,
+          });
+        } catch { /* ignore */ }
+        sessionTrace = null;
+      }
+
       if (flushTimer) {
         clearInterval(flushTimer);
         flushTimer = undefined;
