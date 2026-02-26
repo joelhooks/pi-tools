@@ -68,6 +68,18 @@ function createAggregate(): AggregatedUsage {
   };
 }
 
+function getTraceTags(model?: { provider?: unknown; id?: unknown }): string[] {
+  const tags: Array<string | undefined> = [
+    ...TRACE_TAGS,
+    `channel:${CHANNEL}`,
+    `session:${SESSION_TYPE}`,
+    typeof model?.provider === "string" ? `provider:${model.provider}` : undefined,
+    typeof model?.id === "string" ? `model:${model.id}` : undefined,
+  ];
+
+  return tags.filter((tag): tag is string => typeof tag === "string" && tag.length > 0);
+}
+
 function extractText(content: unknown, maxLen = 2000): string | undefined {
   if (!content) return undefined;
   if (typeof content === "string") return content.slice(0, maxLen);
@@ -106,6 +118,7 @@ export default function (pi: ExtensionAPI) {
   const turnUsages = new Map<number, AggregatedUsage>();
   let activeTurnIndex = 0;
   let lastUserInput: string | undefined;
+  let lastAssistantStartTime: number | undefined;
 
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
   const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -153,7 +166,12 @@ export default function (pi: ExtensionAPI) {
     try {
       const message = event.message;
       if (!message || typeof message !== "object") return;
-      if ((message as { role?: unknown }).role !== "user") return;
+      const role = (message as { role?: unknown }).role;
+      if (role === "assistant") {
+        lastAssistantStartTime = Date.now();
+        return;
+      }
+      if (role !== "user") return;
 
       const content = (message as { content?: unknown }).content;
       const extracted = extractText(content);
@@ -188,6 +206,9 @@ export default function (pi: ExtensionAPI) {
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const output = extractText((message as { content?: unknown }).content);
       const input = lastUserInput;
+      const completionStartTime = lastAssistantStartTime
+        ? new Date(lastAssistantStartTime)
+        : undefined;
 
       const turnIndex =
         typeof (event as { turnIndex?: unknown }).turnIndex === "number"
@@ -202,7 +223,7 @@ export default function (pi: ExtensionAPI) {
         sessionId: sessionId ?? undefined,
         input,
         output,
-        tags: TRACE_TAGS,
+        tags: getTraceTags(ctx.model),
         metadata: {
           channel: CHANNEL,
           sessionType: SESSION_TYPE,
@@ -211,11 +232,11 @@ export default function (pi: ExtensionAPI) {
           model: ctx.model?.id,
           provider: ctx.model?.provider,
           stopReason,
-          tokenCount: {
-            input: usage.input,
-            output: usage.output,
-            total: usage.totalTokens,
-          },
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          totalTokens: usage.totalTokens,
+          cacheReadTokens: usage.cacheRead,
+          cacheWriteTokens: usage.cacheWrite,
         },
       });
 
@@ -224,6 +245,8 @@ export default function (pi: ExtensionAPI) {
         model: ctx.model?.id,
         input,
         output,
+        completionStartTime,
+        endTime: new Date(),
         usage: {
           input: usage.input,
           output: usage.output,
@@ -233,16 +256,16 @@ export default function (pi: ExtensionAPI) {
         metadata: {
           model: ctx.model?.id,
           provider: ctx.model?.provider,
-          cacheRead: usage.cacheRead,
-          cacheWrite: usage.cacheWrite,
           stopReason,
-          tokenCount: {
-            input: usage.input,
-            output: usage.output,
-            total: usage.totalTokens,
-          },
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          totalTokens: usage.totalTokens,
+          cacheReadTokens: usage.cacheRead,
+          cacheWriteTokens: usage.cacheWrite,
         },
       });
+
+      lastAssistantStartTime = undefined;
     } catch (error) {
       console.error("langfuse-cost: Failed to process message_end", error);
     }
@@ -299,7 +322,7 @@ export default function (pi: ExtensionAPI) {
         sessionId: sessionId ?? undefined,
         input,
         output: turnOutput,
-        tags: TRACE_TAGS,
+        tags: getTraceTags(ctx.model),
         metadata: {
           channel: CHANNEL,
           sessionType: SESSION_TYPE,
@@ -308,11 +331,11 @@ export default function (pi: ExtensionAPI) {
           model: ctx.model?.id,
           provider: ctx.model?.provider,
           stopReason,
-          tokenCount: {
-            input: turnAggregate.input,
-            output: turnAggregate.output,
-            total: turnAggregate.totalTokens,
-          },
+          inputTokens: turnAggregate.input,
+          outputTokens: turnAggregate.output,
+          totalTokens: turnAggregate.totalTokens,
+          cacheReadTokens: turnAggregate.cacheRead,
+          cacheWriteTokens: turnAggregate.cacheWrite,
           toolResultsCount,
           messageCount: turnAggregate.messageCount,
         },
@@ -322,6 +345,7 @@ export default function (pi: ExtensionAPI) {
         name: "session.turn",
         model: ctx.model?.id,
         input,
+        output: turnOutput,
         usage: {
           input: turnAggregate.input,
           output: turnAggregate.output,
@@ -330,15 +354,14 @@ export default function (pi: ExtensionAPI) {
         },
         metadata: {
           provider: ctx.model?.provider,
-          cacheRead: turnAggregate.cacheRead,
-          cacheWrite: turnAggregate.cacheWrite,
+          inputTokens: turnAggregate.input,
+          outputTokens: turnAggregate.output,
+          totalTokens: turnAggregate.totalTokens,
+          cacheReadTokens: turnAggregate.cacheRead,
+          cacheWriteTokens: turnAggregate.cacheWrite,
+          model: ctx.model?.id,
           messageCount: turnAggregate.messageCount,
           toolResultsCount,
-          tokenCount: {
-            input: turnAggregate.input,
-            output: turnAggregate.output,
-            total: turnAggregate.totalTokens,
-          },
         },
       });
 
