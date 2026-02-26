@@ -16,6 +16,7 @@ type AggregatedUsage = UsageLike & {
 const CHANNEL = process.env.JOELCLAW_CHANNEL || "interactive";
 const TRACE_TAGS = ["joelclaw", "pi-session"];
 const FLUSH_INTERVAL_MS = 30_000;
+let sessionId: string | null = null;
 
 function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -97,6 +98,7 @@ export default function (pi: ExtensionAPI) {
         publicKey,
         secretKey,
         baseUrl,
+        environment: "production",
       });
 
       flushTimer = setInterval(() => {
@@ -116,10 +118,26 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  pi.on("session_start", (_event, ctx) => {
+    try {
+      sessionId = ctx.sessionManager.getSessionId() ?? null;
+    } catch {
+      // ignore
+    }
+  });
+
   pi.on("message_end", (event, ctx) => {
     if (!langfuse) return;
 
     try {
+      if (!sessionId) {
+        try {
+          sessionId = ctx.sessionManager.getSessionId() ?? null;
+        } catch {
+          // ignore
+        }
+      }
+
       const message = event.message;
       if (!message || typeof message !== "object") return;
 
@@ -139,7 +157,8 @@ export default function (pi: ExtensionAPI) {
       addUsage(aggregate, usage);
 
       const trace = langfuse.trace({
-        name: "pi.llm_call",
+        name: "joelclaw.session.call",
+        sessionId: sessionId ?? undefined,
         tags: TRACE_TAGS,
         metadata: {
           channel: CHANNEL,
@@ -149,7 +168,7 @@ export default function (pi: ExtensionAPI) {
       });
 
       trace.generation({
-        name: "assistant_response",
+        name: "session.call",
         model: ctx.model?.id,
         usage: {
           input: usage.input,
@@ -173,6 +192,14 @@ export default function (pi: ExtensionAPI) {
     if (!langfuse) return;
 
     try {
+      if (!sessionId) {
+        try {
+          sessionId = ctx.sessionManager.getSessionId() ?? null;
+        } catch {
+          // ignore
+        }
+      }
+
       const turnIndex =
         typeof (event as { turnIndex?: unknown }).turnIndex === "number"
           ? Number((event as { turnIndex?: number }).turnIndex)
@@ -197,7 +224,8 @@ export default function (pi: ExtensionAPI) {
           : 0;
 
       const trace = langfuse.trace({
-        name: "pi.llm_turn",
+        name: "joelclaw.session.turn",
+        sessionId: sessionId ?? undefined,
         tags: TRACE_TAGS,
         metadata: {
           channel: CHANNEL,
@@ -208,7 +236,7 @@ export default function (pi: ExtensionAPI) {
       });
 
       trace.generation({
-        name: "assistant_turn_aggregate",
+        name: "session.turn",
         model: ctx.model?.id,
         usage: {
           input: turnAggregate.input,
