@@ -13,10 +13,21 @@ type AggregatedUsage = UsageLike & {
   messageCount: number;
 };
 
-const CHANNEL = process.env.JOELCLAW_CHANNEL || "interactive";
+type SessionType = "gateway" | "interactive" | "codex";
+
+const CHANNEL = process.env.GATEWAY_ROLE || process.env.JOELCLAW_CHANNEL || "interactive";
+const SESSION_TYPE = getSessionType(CHANNEL);
 const TRACE_TAGS = ["joelclaw", "pi-session"];
 const FLUSH_INTERVAL_MS = 30_000;
 let sessionId: string | null = null;
+
+function getSessionType(channel: string): SessionType {
+  const normalized = channel.toLowerCase();
+  if (normalized === "gateway" || normalized === "codex" || normalized === "interactive") {
+    return normalized;
+  }
+  return "interactive";
+}
 
 function isNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -55,6 +66,17 @@ function createAggregate(): AggregatedUsage {
     totalTokens: 0,
     messageCount: 0,
   };
+}
+
+function extractText(content: unknown, maxLen = 2000): string | undefined {
+  if (!content) return undefined;
+  if (typeof content === "string") return content.slice(0, maxLen);
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .filter((b: any) => b?.type === "text" && typeof b?.text === "string")
+    .map((b: any) => b.text)
+    .join("\n");
+  return text ? text.slice(0, maxLen) : undefined;
 }
 
 function addUsage(aggregate: AggregatedUsage, usage: UsageLike): void {
@@ -147,6 +169,7 @@ export default function (pi: ExtensionAPI) {
       if (!usage) return;
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
+      const output = extractText((message as { content?: unknown }).content);
 
       const turnIndex =
         typeof (event as { turnIndex?: unknown }).turnIndex === "number"
@@ -159,17 +182,30 @@ export default function (pi: ExtensionAPI) {
       const trace = langfuse.trace({
         name: "joelclaw.session.call",
         sessionId: sessionId ?? undefined,
+        input: output,
+        output,
         tags: TRACE_TAGS,
         metadata: {
           channel: CHANNEL,
+          sessionType: SESSION_TYPE,
           component: "pi-session",
           turnIndex,
+          model: ctx.model?.id,
+          provider: ctx.model?.provider,
+          stopReason,
+          tokenCount: {
+            input: usage.input,
+            output: usage.output,
+            total: usage.totalTokens,
+          },
         },
       });
 
       trace.generation({
         name: "session.call",
         model: ctx.model?.id,
+        input: undefined,
+        output,
         usage: {
           input: usage.input,
           output: usage.output,
@@ -177,10 +213,16 @@ export default function (pi: ExtensionAPI) {
           unit: "TOKENS",
         },
         metadata: {
+          model: ctx.model?.id,
           provider: ctx.model?.provider,
           cacheRead: usage.cacheRead,
           cacheWrite: usage.cacheWrite,
           stopReason,
+          tokenCount: {
+            input: usage.input,
+            output: usage.output,
+            total: usage.totalTokens,
+          },
         },
       });
     } catch (error) {
@@ -223,15 +265,35 @@ export default function (pi: ExtensionAPI) {
           ? (event as { toolResults: unknown[] }).toolResults.length
           : 0;
 
+      const messagesOutput = (event as { messages?: unknown }).messages;
+      const turnOutput = messagesOutput
+        ? extractText(messagesOutput)
+        : extractText((event as { summary?: unknown }).summary);
+      const stopReason =
+        typeof (event as { stopReason?: unknown }).stopReason === "string"
+          ? (event as { stopReason?: string }).stopReason
+          : undefined;
+
       const trace = langfuse.trace({
         name: "joelclaw.session.turn",
         sessionId: sessionId ?? undefined,
+        output: turnOutput,
         tags: TRACE_TAGS,
         metadata: {
           channel: CHANNEL,
+          sessionType: SESSION_TYPE,
           component: "pi-session",
           turnIndex,
+          model: ctx.model?.id,
+          provider: ctx.model?.provider,
+          stopReason,
+          tokenCount: {
+            input: turnAggregate.input,
+            output: turnAggregate.output,
+            total: turnAggregate.totalTokens,
+          },
           toolResultsCount,
+          messageCount: turnAggregate.messageCount,
         },
       });
 
@@ -250,6 +312,11 @@ export default function (pi: ExtensionAPI) {
           cacheWrite: turnAggregate.cacheWrite,
           messageCount: turnAggregate.messageCount,
           toolResultsCount,
+          tokenCount: {
+            input: turnAggregate.input,
+            output: turnAggregate.output,
+            total: turnAggregate.totalTokens,
+          },
         },
       });
 
