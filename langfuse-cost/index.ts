@@ -192,6 +192,8 @@ export default function (pi: ExtensionAPI) {
       const content = (message as { content?: unknown }).content;
       const extracted = extractText(content);
       if (extracted !== undefined) {
+        // Debug: log what we're capturing as user input
+        console.error(`[langfuse-cost] message_start user text (${extracted.length} chars): ${extracted.slice(0, 80)}...`);
         lastUserInput = extracted;
       } else {
         const toolSummary = extractToolResultSummary(content);
@@ -227,7 +229,9 @@ export default function (pi: ExtensionAPI) {
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const content = (message as { content?: unknown }).content;
       const output = extractText(content) || extractToolNames(content);
-      const input = lastUserInput;
+      const input = lastUserInput ?? (stopReason === "toolUse" ? "[tool continuation]" : undefined);
+      // Clear after use to prevent stale input bleeding into next call
+      lastUserInput = undefined;
       const completionStartTime = lastAssistantStartTime
         ? new Date(lastAssistantStartTime)
         : undefined;
