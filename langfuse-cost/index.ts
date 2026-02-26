@@ -92,6 +92,9 @@ function extractToolResultSummary(content: unknown): string | undefined {
   return results > 0 ? `[${results} tool result(s)]` : undefined;
 }
 
+/** Known single-line header keys we care about */
+const HEADER_KEYS = new Set(["channel", "date", "platform_capabilities"]);
+
 /** Strip ---\nChannel:...\n--- header from input, return clean text + parsed metadata */
 function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<string, string> } {
   const headerMatch = text.match(/^---\n([\s\S]*?)\n---\n*/);
@@ -101,11 +104,14 @@ function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<
   const meta: Record<string, string> = {};
 
   for (const line of headerBlock.split("\n")) {
+    // Skip continuation lines (start with - or whitespace followed by -)
+    if (/^\s*-/.test(line)) continue;
     const colonIdx = line.indexOf(":");
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim().toLowerCase().replace(/\s+/g, "_");
       const value = line.slice(colonIdx + 1).trim();
-      if (key && value) meta[key] = value;
+      // Only capture known single-value keys; skip multi-line keys like "formatting_guide"
+      if (key && value && HEADER_KEYS.has(key)) meta[key] = value;
     }
   }
 
@@ -127,6 +133,7 @@ export default function (pi: ExtensionAPI) {
   let lastUserInput: string | undefined;
   let lastInputHeaderMeta: Record<string, string> | undefined;
   let lastAssistantStartTime: number | undefined;
+  let pendingToolNames: string[] = [];
 
   const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
   const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -200,6 +207,17 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("tool_call", (event, _ctx) => {
+    try {
+      const toolName = (event as any)?.toolName;
+      if (typeof toolName === "string" && toolName) {
+        pendingToolNames.push(toolName);
+      }
+    } catch {
+      // ignore
+    }
+  });
+
   pi.on("message_end", (event, ctx) => {
     if (!langfuse) {
       console.warn("langfuse-cost: langfuse is null, skipping tracing");
@@ -233,7 +251,9 @@ export default function (pi: ExtensionAPI) {
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const content = (message as { content?: unknown }).content;
-      const toolNames = extractToolNames(content);
+      // Prefer tool names accumulated from tool_call events, fall back to content extraction
+      const toolNames = pendingToolNames.length > 0 ? [...pendingToolNames] : extractToolNames(content);
+      pendingToolNames = [];
       const outputText = extractText(content);
       const output =
         outputText ||
