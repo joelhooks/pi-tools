@@ -19,7 +19,7 @@ let sessionId: string | null = null;
 
 function getSessionType(channel: string): SessionType {
   const normalized = channel.toLowerCase();
-  if (normalized === "gateway" || normalized === "codex" || normalized === "interactive") {
+  if (normalized === "gateway" || normalized === "central" || normalized === "codex" || normalized === "interactive") {
     return normalized;
   }
   return "interactive";
