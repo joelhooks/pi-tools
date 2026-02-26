@@ -76,12 +76,11 @@ function extractText(content: unknown, maxLen = 2000): string | undefined {
   return text ? text.slice(0, maxLen) : undefined;
 }
 
-function extractToolNames(content: unknown): string | undefined {
-  if (!Array.isArray(content)) return undefined;
-  const tools = content
+function extractToolNames(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content
     .filter((b: any) => b?.type === "tool_use" && typeof b?.name === "string")
-    .map((b: any) => b.name);
-  return tools.length > 0 ? `[tools: ${tools.join(", ")}]` : undefined;
+    .map((b: any) => b.name as string);
 }
 
 function extractToolResultSummary(content: unknown): string | undefined {
@@ -218,9 +217,11 @@ export default function (pi: ExtensionAPI) {
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const content = (message as { content?: unknown }).content;
+      const toolNames = extractToolNames(content);
+      const outputText = extractText(content);
       const output =
-        extractText(content) ||
-        extractToolNames(content) ||
+        outputText ||
+        (toolNames.length > 0 ? `[${toolNames.join(", ")}]` : undefined) ||
         (typeof stopReason === "string" ? `[${stopReason}]` : undefined);
       const input = lastUserInput ?? (stopReason === "toolUse" ? "[tool continuation]" : undefined);
       const turnIndex =
@@ -252,6 +253,7 @@ export default function (pi: ExtensionAPI) {
           cacheReadTokens: usage.cacheRead,
           cacheWriteTokens: usage.cacheWrite,
           ...(lastInputHeaderMeta ? { sourceChannel: lastInputHeaderMeta } : {}),
+          ...(toolNames.length > 0 ? { tools: toolNames } : {}),
         },
       });
 
