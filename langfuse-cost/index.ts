@@ -91,6 +91,22 @@ function extractText(content: unknown, maxLen = 2000): string | undefined {
   return text ? text.slice(0, maxLen) : undefined;
 }
 
+function extractToolNames(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const tools = content
+    .filter((b: any) => b?.type === "tool_use" && typeof b?.name === "string")
+    .map((b: any) => b.name);
+  return tools.length > 0 ? `[tools: ${tools.join(", ")}]` : undefined;
+}
+
+function extractToolResultSummary(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const results = content.filter(
+    (b: any) => b?.type === "tool_result" && typeof b?.tool_use_id === "string",
+  ).length;
+  return results > 0 ? `[${results} tool result(s)]` : undefined;
+}
+
 function addUsage(aggregate: AggregatedUsage, usage: UsageLike): void {
   aggregate.input += usage.input;
   aggregate.output += usage.output;
@@ -177,6 +193,11 @@ export default function (pi: ExtensionAPI) {
       const extracted = extractText(content);
       if (extracted !== undefined) {
         lastUserInput = extracted;
+      } else {
+        const toolSummary = extractToolResultSummary(content);
+        if (toolSummary !== undefined) {
+          lastUserInput = toolSummary;
+        }
       }
     } catch {
       // ignore
@@ -204,7 +225,8 @@ export default function (pi: ExtensionAPI) {
       if (!usage) return;
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
-      const output = extractText((message as { content?: unknown }).content);
+      const content = (message as { content?: unknown }).content;
+      const output = extractText(content) || extractToolNames(content);
       const input = lastUserInput;
       const completionStartTime = lastAssistantStartTime
         ? new Date(lastAssistantStartTime)
@@ -308,9 +330,17 @@ export default function (pi: ExtensionAPI) {
           : 0;
 
       const messagesOutput = (event as { messages?: unknown }).messages;
-      const turnOutput = messagesOutput
+      let turnOutput = messagesOutput
         ? extractText(messagesOutput)
         : extractText((event as { summary?: unknown }).summary);
+      if (turnOutput === undefined) {
+        const toolSummary = messagesOutput ? extractToolNames(messagesOutput) : undefined;
+        if (toolSummary !== undefined) {
+          turnOutput = toolSummary;
+        } else if (toolResultsCount > 0) {
+          turnOutput = `[${toolResultsCount} tool result(s)]`;
+        }
+      }
       const stopReason =
         typeof (event as { stopReason?: unknown }).stopReason === "string"
           ? (event as { stopReason?: string }).stopReason
