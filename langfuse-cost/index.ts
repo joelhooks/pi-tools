@@ -114,7 +114,11 @@ function stripChannelHeader(text: string): { clean: string; headerMeta?: Record<
 }
 
 
+let _instanceCount = 0;
+
 export default function (pi: ExtensionAPI) {
+  _instanceCount++;
+  console.warn(`langfuse-cost: INIT instance #${_instanceCount}`);
   let langfuse: Langfuse | null = null;
   let flushTimer: ReturnType<typeof setInterval> | undefined;
   let lastUserInput: string | undefined;
