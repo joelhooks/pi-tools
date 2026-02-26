@@ -16,6 +16,7 @@ const SESSION_TYPE = getSessionType(CHANNEL);
 const TRACE_TAGS = ["joelclaw", "pi-session"];
 const FLUSH_INTERVAL_MS = 30_000;
 let sessionId: string | null = null;
+let lastTracedMessageId: string | null = null;
 
 function getSessionType(channel: string): SessionType {
   const normalized = channel.toLowerCase();
@@ -214,6 +215,14 @@ export default function (pi: ExtensionAPI) {
 
       const usage = asUsage((message as { usage?: unknown }).usage);
       if (!usage) return;
+
+      // Dedup guard — pi fires message_end twice per assistant message
+      // Use usage fingerprint (input+output+total) as dedup key since message has no stable id
+      const usageRaw = (message as { usage?: unknown }).usage;
+      const u = asUsage(usageRaw);
+      const dedupKey = u ? `${u.input}-${u.output}-${u.totalTokens}-${u.cacheRead}` : null;
+      if (dedupKey && dedupKey === lastTracedMessageId) return;
+      if (dedupKey) lastTracedMessageId = dedupKey;
 
       const stopReason = (message as { stopReason?: unknown }).stopReason;
       const content = (message as { content?: unknown }).content;
