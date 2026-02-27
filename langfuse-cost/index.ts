@@ -167,9 +167,9 @@ export default function (pi: ExtensionAPI) {
 
       flushTimer = setInterval(() => {
         try {
-          langfuse?.flush();
-        } catch (error) {
-          console.error("langfuse-cost: Langfuse flush failed", error);
+          langfuse?.flush()?.catch?.(() => {}); // Swallow async flush failures silently
+        } catch {
+          // Swallow sync flush failures silently
         }
       }, FLUSH_INTERVAL_MS);
     } catch (error) {

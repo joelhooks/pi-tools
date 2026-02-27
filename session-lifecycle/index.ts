@@ -272,6 +272,35 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ── Global error guard: catch unhandled network errors before they spam the TUI ──
+  // ioredis, Langfuse SDK, MCP clients, etc. can all produce unhandled rejections
+  // or uncaught exceptions from node:net when services are unreachable.
+  const NETWORK_ERRORS = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EHOSTUNREACH", "EPIPE", "EAI_AGAIN"]);
+  const networkErrorSeen = new Set<string>();
+
+  function isNetworkError(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const code = (err as any).code;
+    if (typeof code === "string" && NETWORK_ERRORS.has(code)) return true;
+    const msg = (err as any).message;
+    if (typeof msg === "string" && /internalConnectMultiple|afterConnectMultiple|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND/.test(msg)) return true;
+    const stack = (err as any).stack;
+    if (typeof stack === "string" && /internalConnectMultiple|afterConnectMultiple/.test(stack)) return true;
+    return false;
+  }
+
+  process.on("unhandledRejection", (reason) => {
+    if (isNetworkError(reason)) {
+      const code = (reason as any)?.code || "NETWORK";
+      if (!networkErrorSeen.has(code)) {
+        networkErrorSeen.add(code);
+        console.log(`[error-guard] suppressed unhandled network error: ${code}`);
+      }
+      return; // Swallow — don't let Node.js print the stack trace
+    }
+    // Non-network errors: let Node.js default behavior handle them
+  });
+
   // ── session_start: reset tracking state ─────────────────────
 
   pi.on("session_start", async () => {
@@ -279,6 +308,7 @@ export default function (pi: ExtensionAPI) {
     sessionStartTime = Date.now();
     userMessageCount = 0;
     firstUserMessage = "";
+    networkErrorSeen.clear();
   });
 
   // ── before_agent_start: briefing + awareness ────────────────
@@ -355,7 +385,9 @@ export default function (pi: ExtensionAPI) {
         connectTimeout: 2000,
         commandTimeout: 2000,
         lazyConnect: true,
+        retryStrategy: () => null, // Don't retry — this is a one-shot check
       });
+      redis.on("error", () => {}); // Prevent unhandled 'error' event → stderr spew
       await redis.connect();
       pendingCount = await redis.llen("memory:review:pending");
       redis.disconnect();
