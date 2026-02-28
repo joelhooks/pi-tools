@@ -18,7 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "@mariozechner/pi-ai";
 
@@ -80,6 +80,10 @@ function shortSessionId(id: string): string {
   return id.length > 16 ? id.slice(0, 16) : id;
 }
 
+function sanitizeText(s: string): string {
+  return s.replace(/[\x00-\x1f\x7f\r]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 // ── Widget ──────────────────────────────────────────────
 
 function refreshWidget(): void {
@@ -111,6 +115,7 @@ function stopStatusTimer(): void {
 
 function renderWidget(theme: any): string[] {
   const now = Date.now();
+  const width = process.stdout.columns || 80;
   const visible = [...readerTasks.values()].filter(
     (t) => t.status === "running" || (t.finishedAt && now - t.finishedAt < COMPLETED_LINGER_MS),
   );
@@ -123,15 +128,26 @@ function renderWidget(theme: any): string[] {
         : t.status === "done"
           ? theme.fg("success", "✓")
           : theme.fg("error", "✗");
+
+    const header = `${icon} ${theme.fg("text", `reader #${t.id}`)} ${theme.fg("dim", `${elapsed(t)} · ${t.sessionInfo.agent}`)}`;
+    const headerTrunc = truncateToWidth(header, width);
+
+    const headerWidth = visibleWidth(headerTrunc);
+    const availableSnippet = Math.max(0, width - headerWidth - 1);
+
     // Show output snippet for completed, query snippet for running
-    let snippet: string;
+    let snippet = "";
     if (t.status !== "running" && t.output) {
-      const firstLine = t.output.split("\n").find((l) => l.trim()) || "";
-      snippet = firstLine.length > 45 ? firstLine.slice(0, 42) + "…" : firstLine;
+      const firstLine = sanitizeText(t.output.split("\n").find((l) => l.trim()) || "");
+      snippet = firstLine;
     } else {
-      snippet = t.query.length > 45 ? t.query.slice(0, 42) + "…" : t.query;
+      snippet = sanitizeText(t.query);
     }
-    return `${icon} ${theme.fg("text", `reader #${t.id}`)} ${theme.fg("dim", `${elapsed(t)} · ${t.sessionInfo.agent}`)} ${theme.fg("muted", snippet)}`;
+
+    if (availableSnippet <= 0 || !snippet) return headerTrunc;
+
+    const safeSnippet = truncateToWidth(snippet, availableSnippet);
+    return `${headerTrunc} ${theme.fg("muted", safeSnippet)}`;
   });
 }
 
