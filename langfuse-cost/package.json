@@ -1,7 +1,0 @@
-{
-  "name": "langfuse-cost",
-  "private": true,
-  "dependencies": {
-    "langfuse": "^3"
-  }
-}
