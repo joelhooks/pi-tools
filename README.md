@@ -27,7 +27,7 @@ pi config  # enable/disable individual extensions
 |-----------|------|
 | `repo-autopsy` 🔬 | Clone GitHub repos and analyze them — ripgrep, ast-grep, deps, hotspots, blame, tokei stats |
 | `ts-check` ⚡ | TypeScript diagnostics + intelligence via tsgo LSP (TypeScript 7 native) — hover, definitions, references, auto-diagnostics after edits |
-| `codex-exec` 🚀 | Run codex tasks in the background with async result reporting |
+| `codex-exec` 🚀 | Run codex tasks in the background with async result reporting (default: `--ask-for-approval never` + `--sandbox danger-full-access`; `full_auto` is opt-in legacy mode) |
 | `ralph-loop` 🔁 | Autonomous coding loops via Codex — PRD-driven stories or free-form prompt loops with progress reporting |
 | `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
 | `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |

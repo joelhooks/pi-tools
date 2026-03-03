@@ -201,6 +201,9 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+const DEFAULT_SANDBOX = "danger-full-access";
+const DEFAULT_APPROVAL_POLICY = "never";
+
 // ── Widget ─────────────────────────────────────────────
 
 function refreshWidget(): void {
@@ -408,15 +411,17 @@ export default function (pi: ExtensionAPI) {
       "Live status shown in the widget above the editor — no need to poll.",
       "Spawn multiple tasks in parallel for concurrent work — results batch into one turn.",
       "Use session_id to resume a previous codex session with a follow-up prompt.",
+      "Defaults are approval=never and sandbox=danger-full-access unless full_auto=true.",
       "Use codex_tasks only when you need full output details.",
     ].join(" "),
     parameters: Type.Object({
       prompt: Type.String({ description: "The task/prompt to send to codex" }),
       session_id: Type.Optional(Type.String({ description: "Resume a previous codex session by thread ID" })),
       model: Type.Optional(Type.String({ description: "Model override (e.g. o3, o4-mini)" })),
-      sandbox: Type.Optional(Type.String({ description: "Sandbox mode: read-only, workspace-write, danger-full-access" })),
+      sandbox: Type.Optional(Type.String({ description: "Sandbox mode: read-only, workspace-write, danger-full-access (default: danger-full-access)" })),
+      approval_policy: Type.Optional(Type.String({ description: "Approval policy: untrusted, on-request, never (default: never)" })),
       cwd: Type.Optional(Type.String({ description: "Working directory" })),
-      full_auto: Type.Optional(Type.Boolean({ description: "Run in full-auto mode (default: true)", default: true })),
+      full_auto: Type.Optional(Type.Boolean({ description: "Legacy --full-auto preset. Default false.", default: false })),
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -443,17 +448,28 @@ export default function (pi: ExtensionAPI) {
       tasks.set(taskId, task);
 
       const wrappedPrompt = wrapPrompt(params.prompt);
+      const useFullAuto = params.full_auto === true;
+      const effectiveSandbox = params.sandbox || DEFAULT_SANDBOX;
+      const effectiveApprovalPolicy = params.approval_policy || DEFAULT_APPROVAL_POLICY;
       const args: string[] = [];
       if (params.session_id) {
         args.push("exec", "resume", params.session_id, "--json");
       } else {
         args.push("exec", "--json");
       }
-      if (params.full_auto !== false) args.push("--full-auto");
+
+      if (useFullAuto) {
+        args.push("--full-auto");
+        if (params.sandbox) args.push("--sandbox", params.sandbox);
+        if (params.approval_policy) args.push("--ask-for-approval", params.approval_policy);
+      } else {
+        args.push("--ask-for-approval", effectiveApprovalPolicy);
+        args.push("--sandbox", effectiveSandbox);
+      }
+
       args.push("--skip-git-repo-check");
       args.push("--cd", cwd);
       if (params.model) args.push("--model", params.model);
-      if (params.sandbox) args.push("--sandbox", params.sandbox);
       args.push("--", wrappedPrompt);
 
       spawnCodex(task, args, () => {
@@ -491,6 +507,9 @@ export default function (pi: ExtensionAPI) {
               output: task.output,
               toolCalls: task.toolCalls,
               usage: task.usage,
+              fullAuto: useFullAuto,
+              sandbox: useFullAuto ? params.sandbox || "workspace-write" : effectiveSandbox,
+              approvalPolicy: useFullAuto ? params.approval_policy || "on-request" : effectiveApprovalPolicy,
             },
           },
           { triggerTurn: shouldTrigger, deliverAs: "followUp" },
@@ -498,17 +517,34 @@ export default function (pi: ExtensionAPI) {
       });
 
       const sessionInfo = params.session_id ? ` (resuming session ${shortId(params.session_id)})` : "";
+      const sandboxLabel = useFullAuto ? params.sandbox || "workspace-write" : effectiveSandbox;
+      const approvalLabel = useFullAuto ? params.approval_policy || "on-request" : effectiveApprovalPolicy;
       return {
         content: [{ type: "text", text: `Codex task ${taskName} started${sessionInfo}. Status in widget.` }],
-        details: { taskId, taskName, sessionId: params.session_id || null },
+        details: {
+          taskId,
+          taskName,
+          sessionId: params.session_id || null,
+          fullAuto: useFullAuto,
+          sandbox: sandboxLabel,
+          approvalPolicy: approvalLabel,
+        },
       };
     },
 
     renderCall(args, theme) {
-      const mode = args.session_id ? `resume ${shortId(args.session_id)}` : "exec";
+      const useFullAuto = args.full_auto === true;
+      const mode = args.session_id
+        ? `resume ${shortId(args.session_id)}`
+        : useFullAuto
+          ? "exec full-auto"
+          : "exec";
+      const sandbox = args.sandbox || (useFullAuto ? "workspace-write" : DEFAULT_SANDBOX);
+      const approval = args.approval_policy || (useFullAuto ? "on-request" : DEFAULT_APPROVAL_POLICY);
       const meta: string[] = [mode];
       if (args.model) meta.push(args.model);
-      if (args.sandbox && args.sandbox !== "workspace-write") meta.push(args.sandbox);
+      if (sandbox !== DEFAULT_SANDBOX) meta.push(sandbox);
+      if (approval !== DEFAULT_APPROVAL_POLICY) meta.push(`approval:${approval}`);
       let text = theme.fg("toolTitle", theme.bold("codex"));
       text += " " + theme.fg("dim", meta.join(" · "));
       const cleanPreview = sanitize(args.prompt);
