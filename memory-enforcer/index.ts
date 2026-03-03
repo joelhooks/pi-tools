@@ -1,0 +1,270 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+type OtelLevel = "info" | "warn" | "error";
+
+const SOURCE = process.env.GATEWAY_ROLE || "interactive";
+const CHANNEL = process.env.GATEWAY_ROLE || process.env.JOELCLAW_CHANNEL || "interactive";
+const JOELCLAW_BIN = process.env.JOELCLAW_BIN || "joelclaw";
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return fallback;
+}
+
+const RECALL_TIMEOUT_MS = parsePositiveInt(process.env.JOELCLAW_MEMORY_RECALL_TIMEOUT_MS, 15_000);
+const RECALL_LIMIT = parsePositiveInt(process.env.JOELCLAW_MEMORY_RECALL_LIMIT, 5);
+const RECALL_QUERY =
+  process.env.JOELCLAW_MEMORY_RECALL_QUERY ||
+  "recent decisions, active work, unresolved failures, and operational context";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function getPath(root: unknown, path: string[]): unknown {
+  let current: unknown = root;
+  for (const key of path) {
+    const record = asRecord(current);
+    if (!record) return undefined;
+    current = record[key];
+  }
+  return current;
+}
+
+function asCount(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+function extractResultCount(rawOutput: string): number {
+  try {
+    const parsed = JSON.parse(rawOutput) as unknown;
+
+    const countCandidates: Array<number | null> = [
+      asCount(getPath(parsed, ["result", "hits"])),
+      asCount(getPath(parsed, ["result", "result", "hits"])),
+      asCount(getPath(parsed, ["envelope", "result", "hits"])),
+      asCount(getPath(parsed, ["payload", "hits"])),
+      asCount(getPath(parsed, ["hits"])),
+      asCount(getPath(parsed, ["result", "count"])),
+      asCount(getPath(parsed, ["envelope", "result", "count"])),
+      asCount(getPath(parsed, ["payload", "count"])),
+      asCount(getPath(parsed, ["count"])),
+    ];
+
+    for (const candidate of countCandidates) {
+      if (candidate != null) return candidate;
+    }
+
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function emitOtel(
+  action: string,
+  metadata: Record<string, unknown>,
+  options: { level?: OtelLevel; success?: boolean } = {},
+): void {
+  void fetch("http://localhost:3111/observability/emit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: randomUUID(),
+      timestamp: Date.now(),
+      level: options.level ?? "info",
+      source: SOURCE,
+      component: "memory-enforcer",
+      action,
+      success: options.success ?? true,
+      metadata,
+    }),
+  }).catch(() => {});
+}
+
+function runRecallCommand(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const args = ["recall", RECALL_QUERY, "--limit", String(RECALL_LIMIT), "--json"];
+    const child = spawn(JOELCLAW_BIN, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+
+    const settle = (cb: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      cb();
+    };
+
+    child.stdout?.setEncoding("utf-8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+
+    child.stderr?.setEncoding("utf-8");
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    child.on("error", (error) => {
+      settle(() => reject(error));
+    });
+
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        settle(() => resolve(stdout));
+        return;
+      }
+
+      const details = [
+        `exit=${code ?? "null"}`,
+        signal ? `signal=${signal}` : null,
+        stderr.trim().length > 0 ? `stderr=${stderr.trim()}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      settle(() => reject(new Error(`joelclaw recall failed (${details})`)));
+    });
+
+    timeoutHandle = setTimeout(() => {
+      child.kill("SIGTERM");
+      settle(() => reject(new Error(`joelclaw recall timed out after ${RECALL_TIMEOUT_MS}ms`)));
+    }, RECALL_TIMEOUT_MS);
+  });
+}
+
+function seedRecall(sessionId: string | null): void {
+  const startedAt = Date.now();
+
+  emitOtel("memory.recall.started", {
+    session_id: sessionId,
+    channel: CHANNEL,
+    query: RECALL_QUERY,
+    timeout_ms: RECALL_TIMEOUT_MS,
+  });
+
+  void runRecallCommand()
+    .then((output) => {
+      emitOtel("memory.recall.completed", {
+        session_id: sessionId,
+        channel: CHANNEL,
+        query: RECALL_QUERY,
+        result_count: extractResultCount(output),
+        latency_ms: Date.now() - startedAt,
+      });
+    })
+    .catch((error) => {
+      emitOtel(
+        "memory.recall.failed",
+        {
+          session_id: sessionId,
+          channel: CHANNEL,
+          query: RECALL_QUERY,
+          latency_ms: Date.now() - startedAt,
+          error: errorMessage(error),
+        },
+        {
+          level: "warn",
+          success: false,
+        },
+      );
+
+      console.warn(`[memory-enforcer] recall seed failed: ${errorMessage(error)}`);
+    });
+}
+
+function requestObserve(sessionId: string | null): void {
+  const data = {
+    session_id: sessionId,
+    trigger: "session_shutdown",
+    channel: CHANNEL,
+  };
+
+  emitOtel("memory.observe.requested", data);
+
+  void (async () => {
+    try {
+      const response = await fetch("http://localhost:8288/e/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "memory/observe.requested",
+          data,
+        }),
+        signal: AbortSignal.timeout(3_000),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (error) {
+      emitOtel(
+        "memory.observe.failed",
+        {
+          ...data,
+          error: errorMessage(error),
+        },
+        {
+          level: "warn",
+          success: false,
+        },
+      );
+
+      console.warn(`[memory-enforcer] observe request failed: ${errorMessage(error)}`);
+    }
+  })();
+}
+
+export default function memoryEnforcer(pi: ExtensionAPI): void {
+  let currentSessionId: string | null = null;
+
+  pi.on("session_start", (_event: unknown, ctx: { sessionManager?: { getSessionId?: () => string | null | undefined } }) => {
+    try {
+      currentSessionId = ctx.sessionManager?.getSessionId?.() ?? null;
+    } catch {
+      currentSessionId = null;
+    }
+
+    const sessionId = currentSessionId;
+    setTimeout(() => seedRecall(sessionId), 0);
+  });
+
+  pi.on("session_shutdown", (...args: unknown[]) => {
+    let sessionIdFromCtx: string | null = null;
+
+    try {
+      const ctx = args[1] as
+        | {
+            sessionManager?: {
+              getSessionId?: () => string | null | undefined;
+            };
+          }
+        | undefined;
+
+      sessionIdFromCtx = ctx?.sessionManager?.getSessionId?.() ?? null;
+    } catch {
+      sessionIdFromCtx = null;
+    }
+
+    requestObserve(sessionIdFromCtx ?? currentSessionId);
+  });
+}
