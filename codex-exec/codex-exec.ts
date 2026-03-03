@@ -459,9 +459,11 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (useFullAuto) {
+        const fullAutoSandbox = params.sandbox || "workspace-write";
+        const fullAutoApprovalPolicy = params.approval_policy || "on-request";
         args.push("--full-auto");
-        if (params.sandbox) args.push("--sandbox", params.sandbox);
-        if (params.approval_policy) args.push("--ask-for-approval", params.approval_policy);
+        args.push("--ask-for-approval", fullAutoApprovalPolicy);
+        args.push("--sandbox", fullAutoSandbox);
       } else {
         args.push("--ask-for-approval", effectiveApprovalPolicy);
         args.push("--sandbox", effectiveSandbox);
