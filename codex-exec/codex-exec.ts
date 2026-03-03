@@ -459,14 +459,14 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (useFullAuto) {
-        const fullAutoSandbox = params.sandbox || "workspace-write";
-        const fullAutoApprovalPolicy = params.approval_policy || "on-request";
         args.push("--full-auto");
-        args.push("--ask-for-approval", fullAutoApprovalPolicy);
-        args.push("--sandbox", fullAutoSandbox);
+        if (params.sandbox) args.push("--sandbox", params.sandbox);
       } else {
-        args.push("--ask-for-approval", effectiveApprovalPolicy);
-        args.push("--sandbox", effectiveSandbox);
+        // Default: no approval prompts, full access
+        args.push("--dangerously-bypass-approvals-and-sandbox");
+        if (params.sandbox && params.sandbox !== "danger-full-access") {
+          args.push("--sandbox", params.sandbox);
+        }
       }
 
       args.push("--skip-git-repo-check");
