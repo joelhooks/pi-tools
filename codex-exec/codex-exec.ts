@@ -409,6 +409,7 @@ export default function (pi: ExtensionAPI) {
     description: [
       "Run a task with codex exec in the background. Returns immediately with a task ID.",
       "Live status shown in the widget above the editor — no need to poll.",
+      "You will be AUTOMATICALLY NOTIFIED when the task completes via a codex-result message — do NOT sleep, poll, or wait. Continue with other work immediately after calling this tool.",
       "Spawn multiple tasks in parallel for concurrent work — results batch into one turn.",
       "Use session_id to resume a previous codex session with a follow-up prompt.",
       "Defaults are approval=never and sandbox=danger-full-access unless full_auto=true.",
@@ -522,7 +523,7 @@ export default function (pi: ExtensionAPI) {
       const sandboxLabel = useFullAuto ? params.sandbox || "workspace-write" : effectiveSandbox;
       const approvalLabel = useFullAuto ? params.approval_policy || "on-request" : effectiveApprovalPolicy;
       return {
-        content: [{ type: "text", text: `Codex task ${taskName} started${sessionInfo}. Status in widget.` }],
+        content: [{ type: "text", text: `Codex task ${taskName} started${sessionInfo}. You will be notified automatically when it completes — do not poll or wait. Continue with other work.` }],
         details: {
           taskId,
           taskName,
