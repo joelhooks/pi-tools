@@ -1,10 +1,12 @@
-// Grind Mode — auto-compact at 50% context and keep the session running.
+// Grind Mode — autonomous coding loop with auto-compact.
 //
 // `/grind` toggles grind mode on/off.
 // When on: after each agent turn, sends a follow-up message to keep building.
 // Auto-compacts at 50% context usage to prevent overflow.
 // Auto-stops after 3 consecutive no-op turns (no tool calls, <10 chars text).
 // The `grind_stop` tool lets the agent self-terminate when all work is done.
+//
+// ALL behavior is gated on `active` — normal sessions are never affected.
 //
 // Env vars:
 //   GRIND_COMPACT_THRESHOLD  — context % to trigger compaction (default: 50)
@@ -62,10 +64,12 @@ export default function grindMode(pi: ExtensionAPI) {
     },
   });
 
-  // ── agent_end: auto-compact + auto-continue ─────────────────
+  // ── agent_end: auto-compact + auto-continue (ONLY when grind is active) ──
   pi.on("agent_end", async (_event, ctx) => {
+    if (!active) return;
+
     try {
-      // Auto-compact at threshold (fires whether grind is on or not)
+      // Auto-compact at threshold
       let usage: ReturnType<typeof ctx.getContextUsage> | undefined;
       try { usage = ctx.getContextUsage(); } catch {}
       if (usage && usage.percent !== null && usage.percent > COMPACT_THRESHOLD) {
@@ -85,9 +89,6 @@ export default function grindMode(pi: ExtensionAPI) {
         });
         return; // compact triggers its own continuation
       }
-
-      // Auto-continue only if grind is active
-      if (!active) return;
 
       // No-op detection: count consecutive turns with no tool calls and short text
       const msgs = (_event as any)?.messages;
