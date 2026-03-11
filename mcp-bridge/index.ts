@@ -1,14 +1,17 @@
 /**
  * mcp-bridge — Generic MCP client bridge for pi.
  *
- * Connects to any remote MCP server via Streamable HTTP with OAuth support.
- * Dynamically registers all server tools into pi, prefixed by server name.
+ * Connects to remote MCP servers via Streamable HTTP with OAuth support.
+ * Dynamically registers server tools into pi, prefixed by server name.
  *
- * State is stored in ~/.pi/mcp-bridge/:
+ * Bridge-local state is stored in ~/.pi/mcp-bridge/:
  *   servers.json               — Registry of configured servers
  *   client-<name>.json         — OAuth client registration per server
- *   tokens-<name>.json         — OAuth tokens per server
+ *   tokens-<name>.json         — Cached OAuth tokens per server
  *   verifier-<name>.json       — PKCE verifier per server
+ *
+ * Pi-compatible token state is also stored in:
+ *   ~/.pi/agent/mcp-oauth/<name>/tokens.json
  *
  * Commands:
  *   /mcp-add <name> <url>      — Register a new MCP server
@@ -37,28 +40,33 @@ import { homedir } from "node:os";
 import { createServer, type Server } from "node:http";
 import { execSync } from "node:child_process";
 
-// ── Config ──────────────────────────────────────────────────────────
 const BRIDGE_DIR = join(homedir(), ".pi", "mcp-bridge");
+const PI_MCP_OAUTH_DIR = join(homedir(), ".pi", "agent", "mcp-oauth");
 const SERVERS_FILE = join(BRIDGE_DIR, "servers.json");
-const BASE_PORT = 19543; // Linear bridge uses 19542
+const BASE_PORT = 19543;
+const OAUTH_TIMEOUT_MS = 120_000;
+
+type StoredTokens = OAuthTokens & {
+  expiresAt?: number;
+  obtainedAt?: number;
+};
 
 interface ServerConfig {
   name: string;
   url: string;
-  port: number; // Callback port for OAuth
-  local?: boolean; // Local server — no OAuth needed
+  port: number;
+  local?: boolean;
 }
 
 interface ServerState {
   client: Client | null;
   transport: StreamableHTTPClientTransport | null;
   connected: boolean;
-  tools: string[]; // Registered tool names
+  tools: string[];
 }
 
-// ── File helpers ────────────────────────────────────────────────────
-function ensureDir() {
-  if (!existsSync(BRIDGE_DIR)) mkdirSync(BRIDGE_DIR, { recursive: true });
+function ensureDir(path = BRIDGE_DIR) {
+  if (!existsSync(path)) mkdirSync(path, { recursive: true });
 }
 
 function readJson<T>(path: string): T | undefined {
@@ -70,7 +78,7 @@ function readJson<T>(path: string): T | undefined {
 }
 
 function writeJson(path: string, data: unknown) {
-  ensureDir();
+  ensureDir(join(path, ".."));
   writeFileSync(path, JSON.stringify(data, null, 2));
 }
 
@@ -83,11 +91,55 @@ function removeFile(path: string) {
 function clientFile(name: string) {
   return join(BRIDGE_DIR, `client-${name}.json`);
 }
-function tokensFile(name: string) {
+function bridgeTokensFile(name: string) {
   return join(BRIDGE_DIR, `tokens-${name}.json`);
 }
 function verifierFile(name: string) {
   return join(BRIDGE_DIR, `verifier-${name}.json`);
+}
+function piTokensDir(name: string) {
+  return join(PI_MCP_OAUTH_DIR, name);
+}
+function piTokensFile(name: string) {
+  return join(piTokensDir(name), "tokens.json");
+}
+
+function normalizeTokens(tokens: OAuthTokens | StoredTokens): StoredTokens {
+  const normalized: StoredTokens = { ...tokens };
+  if (!normalized.obtainedAt) normalized.obtainedAt = Date.now();
+  if (!normalized.expiresAt && typeof normalized.expires_in === "number") {
+    normalized.expiresAt = normalized.obtainedAt + normalized.expires_in * 1000;
+  }
+  return normalized;
+}
+
+function isExpired(tokens: StoredTokens | undefined, skewMs = 60_000): boolean {
+  if (!tokens) return true;
+  if (typeof tokens.expiresAt !== "number") return false;
+  return Date.now() >= tokens.expiresAt - skewMs;
+}
+
+function loadStoredTokens(name: string): StoredTokens | undefined {
+  const piTokens = readJson<StoredTokens>(piTokensFile(name));
+  if (piTokens?.access_token) return normalizeTokens(piTokens);
+
+  const bridgeTokens = readJson<StoredTokens>(bridgeTokensFile(name));
+  if (bridgeTokens?.access_token) return normalizeTokens(bridgeTokens);
+
+  return undefined;
+}
+
+function saveStoredTokens(name: string, tokens: OAuthTokens | StoredTokens) {
+  const normalized = normalizeTokens(tokens);
+  ensureDir(BRIDGE_DIR);
+  ensureDir(piTokensDir(name));
+  writeJson(bridgeTokensFile(name), normalized);
+  writeJson(piTokensFile(name), normalized);
+}
+
+function clearStoredTokens(name: string) {
+  removeFile(bridgeTokensFile(name));
+  removeFile(piTokensFile(name));
 }
 
 function loadServers(): ServerConfig[] {
@@ -108,13 +160,12 @@ function nextPort(): number {
   return Math.max(...servers.map((s) => s.port)) + 1;
 }
 
-// ── OAuth Provider (per-server) ─────────────────────────────────────
-
 class McpOAuthProvider implements OAuthClientProvider {
   private _codeVerifier: string | undefined;
   private _callbackServer: Server | undefined;
   private _serverName: string;
   private _port: number;
+  private _callbackResolved = false;
 
   constructor(serverName: string, port: number) {
     this._serverName = serverName;
@@ -144,11 +195,14 @@ class McpOAuthProvider implements OAuthClientProvider {
   }
 
   tokens(): OAuthTokens | undefined {
-    return readJson<OAuthTokens>(tokensFile(this._serverName));
+    const tokens = loadStoredTokens(this._serverName);
+    if (!tokens) return undefined;
+    if (isExpired(tokens) && !tokens.refresh_token) return undefined;
+    return tokens;
   }
 
   saveTokens(tokens: OAuthTokens) {
-    writeJson(tokensFile(this._serverName), tokens);
+    saveStoredTokens(this._serverName, tokens);
   }
 
   async redirectToAuthorization(authorizationUrl: URL) {
@@ -172,14 +226,14 @@ class McpOAuthProvider implements OAuthClientProvider {
   }
 
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier") {
-    if (scope === "all" || scope === "tokens") removeFile(tokensFile(this._serverName));
+    if (scope === "all" || scope === "tokens") clearStoredTokens(this._serverName);
     if (scope === "all" || scope === "client") removeFile(clientFile(this._serverName));
     if (scope === "all" || scope === "verifier") removeFile(verifierFile(this._serverName));
   }
 
-  /** Start local HTTP server to capture OAuth callback. Resolves with auth code. */
   waitForCallback(): Promise<string> {
     return new Promise((resolve, reject) => {
+      this._callbackResolved = false;
       this._callbackServer = createServer((req, res) => {
         const url = new URL(req.url || "/", `http://127.0.0.1:${this._port}`);
         if (url.pathname !== "/oauth/callback") {
@@ -190,42 +244,37 @@ class McpOAuthProvider implements OAuthClientProvider {
 
         const code = url.searchParams.get("code");
         const error = url.searchParams.get("error");
+        const errorDescription = url.searchParams.get("error_description");
 
         if (error) {
           res.writeHead(200, { "Content-Type": "text/html" });
-          res.end(
-            `<html><body><h2>Authorization failed</h2><p>${error}</p><p>You can close this tab.</p></body></html>`
-          );
-          this._callbackServer?.close();
-          this._callbackServer = undefined;
-          reject(new Error(`OAuth error: ${error}`));
+          res.end(`<html><body><h2>Authorization failed</h2><p>${error}</p><p>${errorDescription ?? ""}</p><p>You can close this tab.</p></body></html>`);
+          this.stopCallbackServer();
+          this._callbackResolved = true;
+          reject(new Error(`OAuth error: ${error}${errorDescription ? ` - ${errorDescription}` : ""}`));
           return;
         }
 
         if (!code) {
           res.writeHead(400, { "Content-Type": "text/html" });
-          res.end(
-            `<html><body><h2>Missing authorization code</h2><p>You can close this tab.</p></body></html>`
-          );
+          res.end(`<html><body><h2>Missing authorization code</h2><p>You can close this tab.</p></body></html>`);
           return;
         }
 
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(
-          `<html><body><h2>✅ ${this._serverName} connected!</h2><p>You can close this tab and return to pi.</p></body></html>`
-        );
-        this._callbackServer?.close();
-        this._callbackServer = undefined;
+        res.end(`<html><body><h2>✅ ${this._serverName} connected</h2><p>You can close this tab and return to pi.</p></body></html>`);
+        this.stopCallbackServer();
+        this._callbackResolved = true;
         resolve(code);
       });
 
       this._callbackServer.listen(this._port, "127.0.0.1");
 
       setTimeout(() => {
-        this._callbackServer?.close();
-        this._callbackServer = undefined;
-        reject(new Error("OAuth callback timeout (2 minutes)"));
-      }, 120_000);
+        if (this._callbackResolved) return;
+        this.stopCallbackServer();
+        reject(new Error(`OAuth callback timeout (${Math.round(OAUTH_TIMEOUT_MS / 1000)} seconds)`));
+      }, OAUTH_TIMEOUT_MS);
     });
   }
 
@@ -234,8 +283,6 @@ class McpOAuthProvider implements OAuthClientProvider {
     this._callbackServer = undefined;
   }
 }
-
-// ── Extension ───────────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
   const states = new Map<string, ServerState>();
@@ -249,24 +296,17 @@ export default function (pi: ExtensionAPI) {
     return s.length > max ? s.slice(0, max) + "\n\n... (truncated)" : s;
   }
 
-  /** Trigger a footer re-render (e.g. when mcp connection state changes). */
   function refreshFooter() {
     _footerTui?.requestRender();
   }
 
-  /** Build the mcp label for the footer, e.g. "mcp 1/2". Empty string if no servers. */
   function getMcpLabel(): string {
     const servers = loadServers();
     if (servers.length === 0) return "";
-    const connected = servers.filter(
-      (s) => states.get(s.name)?.connected
-    ).length;
+    const connected = servers.filter((s) => states.get(s.name)?.connected).length;
     return `mcp ${connected}/${servers.length}`;
   }
 
-  /**
-   * Register a single MCP tool as a pi tool.
-   */
   function registerMcpTool(
     serverName: string,
     tool: { name: string; description?: string; inputSchema?: any },
@@ -305,15 +345,10 @@ export default function (pi: ExtensionAPI) {
 
           return text(truncate(parts.join("\n\n") || "✓ Done"));
         } catch (err: any) {
-          if (
-            err.message?.includes("Unauthorized") ||
-            err.message?.includes("401")
-          ) {
+          if (err.message?.includes("Unauthorized") || err.message?.includes("401")) {
             const state = states.get(serverName);
             if (state) state.connected = false;
-            return text(
-              `❌ ${serverName} session expired. Run /mcp-login ${serverName}`
-            );
+            return text(`❌ ${serverName} session expired. Run /mcp-login ${serverName}`);
           }
           return text(`❌ ${serverName} error: ${err.message}`);
         }
@@ -323,26 +358,14 @@ export default function (pi: ExtensionAPI) {
     return toolName;
   }
 
-  /**
-   * Connect to a server and register its tools.
-   * Returns true on success.
-   */
-  async function connectServer(
-    config: ServerConfig,
-    ctx?: ExtensionContext
-  ): Promise<boolean> {
+  async function connectServer(config: ServerConfig, ctx?: ExtensionContext): Promise<boolean> {
     const existing = states.get(config.name);
     if (existing?.connected) return true;
 
-    // Local servers: connect without OAuth
     if (config.local) {
       try {
         const transport = new StreamableHTTPClientTransport(new URL(config.url));
-        const client = new Client({
-          name: `pi-mcp-bridge-${config.name}`,
-          version: "1.0.0",
-        });
-
+        const client = new Client({ name: `pi-mcp-bridge-${config.name}`, version: "1.0.0" });
         await client.connect(transport);
 
         const { tools } = await client.listTools();
@@ -358,42 +381,24 @@ export default function (pi: ExtensionAPI) {
           toolNames.push(name);
         }
 
-        states.set(config.name, {
-          client,
-          transport,
-          connected: true,
-          tools: toolNames,
-        });
-
+        states.set(config.name, { client, transport, connected: true, tools: toolNames });
         refreshFooter();
         return true;
       } catch (err: any) {
-        states.set(config.name, {
-          client: null,
-          transport: null,
-          connected: false,
-          tools: [],
-        });
+        states.set(config.name, { client: null, transport: null, connected: false, tools: [] });
         ctx?.ui.notify(`MCP ${config.name}: ${err.message}`, "error");
         refreshFooter();
         return false;
       }
     }
 
-    // Remote servers: require OAuth tokens
     const authProvider = new McpOAuthProvider(config.name, config.port);
     const tokens = authProvider.tokens();
     if (!tokens) return false;
 
     try {
-      const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-        authProvider,
-      });
-      const client = new Client({
-        name: `pi-mcp-bridge-${config.name}`,
-        version: "1.0.0",
-      });
-
+      const transport = new StreamableHTTPClientTransport(new URL(config.url), { authProvider });
+      const client = new Client({ name: `pi-mcp-bridge-${config.name}`, version: "1.0.0" });
       await client.connect(transport);
 
       const { tools } = await client.listTools();
@@ -409,105 +414,62 @@ export default function (pi: ExtensionAPI) {
         toolNames.push(name);
       }
 
-      states.set(config.name, {
-        client,
-        transport,
-        connected: true,
-        tools: toolNames,
-      });
-
+      states.set(config.name, { client, transport, connected: true, tools: toolNames });
       refreshFooter();
       return true;
     } catch (err: any) {
-      states.set(config.name, {
-        client: null,
-        transport: null,
-        connected: false,
-        tools: [],
-      });
+      states.set(config.name, { client: null, transport: null, connected: false, tools: [] });
 
-      if (
-        err.constructor?.name === "UnauthorizedError" ||
-        err.message?.includes("Unauthorized")
-      ) {
+      const message = err?.message || String(err);
+      const unauthorized = err?.constructor?.name === "UnauthorizedError" || message.includes("Unauthorized") || message.includes("401") || message.includes("invalid_token");
+      if (unauthorized) {
+        clearStoredTokens(config.name);
         refreshFooter();
         return false;
       }
 
-      ctx?.ui.notify(`MCP ${config.name}: ${err.message}`, "error");
+      ctx?.ui.notify(`MCP ${config.name}: ${message}`, "error");
       refreshFooter();
       return false;
     }
   }
 
-  /**
-   * Disconnect a server.
-   */
   async function disconnectServer(name: string) {
     const state = states.get(name);
     if (!state) return;
     try {
       if (state.transport) await (state.transport as any).close();
     } catch {}
-    states.set(name, {
-      client: null,
-      transport: null,
-      connected: false,
-      tools: [],
-    });
+    states.set(name, { client: null, transport: null, connected: false, tools: [] });
   }
 
-  /**
-   * Full OAuth login flow for a server.
-   */
-  async function loginServer(
-    config: ServerConfig,
-    ctx: ExtensionContext
-  ): Promise<boolean> {
+  async function loginServer(config: ServerConfig, ctx: ExtensionContext): Promise<boolean> {
     await disconnectServer(config.name);
 
     const authProvider = new McpOAuthProvider(config.name, config.port);
-    const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-      authProvider,
-    });
-    const client = new Client({
-      name: `pi-mcp-bridge-${config.name}`,
-      version: "1.0.0",
-    });
+    const transport = new StreamableHTTPClientTransport(new URL(config.url), { authProvider });
+    const client = new Client({ name: `pi-mcp-bridge-${config.name}`, version: "1.0.0" });
 
     ctx.ui.notify(`Opening browser for ${config.name} authorization...`, "info");
-
     const callbackPromise = authProvider.waitForCallback();
 
     try {
       await client.connect(transport);
-      // If we get here, tokens were already valid
     } catch (err: any) {
-      if (
-        err.constructor?.name === "UnauthorizedError" ||
-        err.message?.includes("Unauthorized")
-      ) {
-        ctx.ui.notify(
-          `Waiting for ${config.name} authorization in browser...`,
-          "info"
-        );
+      const message = err?.message || String(err);
+      const unauthorized = err?.constructor?.name === "UnauthorizedError" || message.includes("Unauthorized") || message.includes("401") || message.includes("invalid_token");
+
+      if (unauthorized) {
+        ctx.ui.notify(`Waiting for ${config.name} authorization in browser...`, "info");
 
         try {
           const code = await callbackPromise;
           await transport.finishAuth(code);
 
-          // Reconnect with fresh tokens
-          const freshTransport = new StreamableHTTPClientTransport(
-            new URL(config.url),
-            { authProvider }
-          );
-          const freshClient = new Client({
-            name: `pi-mcp-bridge-${config.name}`,
-            version: "1.0.0",
-          });
+          const freshTransport = new StreamableHTTPClientTransport(new URL(config.url), { authProvider });
+          const freshClient = new Client({ name: `pi-mcp-bridge-${config.name}`, version: "1.0.0" });
           await freshClient.connect(freshTransport);
 
-          // List and register tools
           const { tools } = await freshClient.listTools();
           const toolNames: string[] = [];
 
@@ -521,38 +483,23 @@ export default function (pi: ExtensionAPI) {
             toolNames.push(toolName);
           }
 
-          states.set(config.name, {
-            client: freshClient,
-            transport: freshTransport,
-            connected: true,
-            tools: toolNames,
-          });
-
+          states.set(config.name, { client: freshClient, transport: freshTransport, connected: true, tools: toolNames });
           refreshFooter();
-          ctx.ui.notify(
-            `${config.name} connected — ${tools.length} tools`,
-            "success"
-          );
+          ctx.ui.notify(`${config.name} connected — ${tools.length} tools`, "success");
           return true;
         } catch (authErr: any) {
           authProvider.stopCallbackServer();
-          ctx.ui.notify(
-            `${config.name} auth failed: ${authErr.message}`,
-            "error"
-          );
+          clearStoredTokens(config.name);
+          ctx.ui.notify(`${config.name} auth failed: ${authErr.message}`, "error");
           return false;
         }
-      } else {
-        authProvider.stopCallbackServer();
-        ctx.ui.notify(
-          `${config.name} connection failed: ${err.message}`,
-          "error"
-        );
-        return false;
       }
+
+      authProvider.stopCallbackServer();
+      ctx.ui.notify(`${config.name} connection failed: ${message}`, "error");
+      return false;
     }
 
-    // Tokens were already valid — register tools
     try {
       const { tools } = await client.listTools();
       const toolNames: string[] = [];
@@ -567,29 +514,16 @@ export default function (pi: ExtensionAPI) {
         toolNames.push(toolName);
       }
 
-      states.set(config.name, {
-        client,
-        transport,
-        connected: true,
-        tools: toolNames,
-      });
-
+      states.set(config.name, { client, transport, connected: true, tools: toolNames });
       refreshFooter();
-      ctx.ui.notify(
-        `${config.name} connected — ${tools.length} tools`,
-        "success"
-      );
+      ctx.ui.notify(`${config.name} connected — ${tools.length} tools`, "success");
       return true;
     } catch (err: any) {
-      ctx.ui.notify(
-        `${config.name} connected but tool list failed: ${err.message}`,
-        "error"
-      );
+      ctx.ui.notify(`${config.name} connected but tool list failed: ${err.message}`, "error");
       return false;
     }
   }
 
-  // ── Custom footer with mcp status ───────────────────────────────
   function installFooter(ctx: ExtensionContext) {
     ctx.ui.setFooter((tui, theme, footerData) => {
       _footerTui = tui;
@@ -599,7 +533,6 @@ export default function (pi: ExtensionAPI) {
         dispose: unsub,
         invalidate() {},
         render(width: number): string[] {
-          // ── Line 1: [mcp N/M]  ~/path (branch) [• session] ──
           let pwd = process.cwd();
           const home = process.env.HOME || process.env.USERPROFILE;
           if (home && pwd.startsWith(home)) pwd = `~${pwd.slice(home.length)}`;
@@ -617,17 +550,13 @@ export default function (pi: ExtensionAPI) {
             if (gap >= 2) {
               line1 = pwd + " ".repeat(gap) + mcpLabel;
             } else {
-              // Not enough room — truncate pwd to make space
               const maxPwd = width - labelWidth - 2;
-              line1 = maxPwd > 3
-                ? truncateToWidth(pwd, maxPwd) + "  " + mcpLabel
-                : truncateToWidth(pwd, width);
+              line1 = maxPwd > 3 ? truncateToWidth(pwd, maxPwd) + "  " + mcpLabel : truncateToWidth(pwd, width);
             }
           } else {
             line1 = truncateToWidth(pwd, width);
           }
 
-          // ── Line 2: token stats + context + model ──
           let totalInput = 0, totalOutput = 0;
           let totalCacheRead = 0, totalCacheWrite = 0, totalCost = 0;
           let thinkingLevel = "off";
@@ -658,15 +587,12 @@ export default function (pi: ExtensionAPI) {
           if (totalCacheRead) statsParts.push(`R${fmt(totalCacheRead)}`);
           if (totalCacheWrite) statsParts.push(`W${fmt(totalCacheWrite)}`);
 
-          const usingSubscription = ctx.model
-            ? ctx.modelRegistry.isUsingOAuth(ctx.model)
-            : false;
+          const usingSubscription = ctx.model ? ctx.modelRegistry.isUsingOAuth(ctx.model) : false;
           if (totalCost || usingSubscription) {
             const costStr = `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`;
             statsParts.push(costStr);
           }
 
-          // Context usage (wrapped — pi core estimateTokens can throw on malformed messages)
           let contextUsage: ReturnType<typeof ctx.getContextUsage> | undefined;
           try { contextUsage = ctx.getContextUsage(); } catch {}
           const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
@@ -691,16 +617,12 @@ export default function (pi: ExtensionAPI) {
             statsLeftWidth = visibleWidth(statsLeft);
           }
 
-          // Right side: model + thinking level
           const modelName = ctx.model?.id || "no-model";
           let rightSideBase = modelName;
           if (ctx.model?.reasoning) {
-            rightSideBase = thinkingLevel === "off"
-              ? `${modelName} • thinking off`
-              : `${modelName} • ${thinkingLevel}`;
+            rightSideBase = thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
           }
 
-          // Add provider prefix if multiple providers
           let rightSide = rightSideBase;
           if (footerData.getAvailableProviderCount() > 1 && ctx.model) {
             const withProvider = `(${ctx.model.provider}) ${rightSideBase}`;
@@ -736,7 +658,6 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  // ── Auto-connect on session start ─────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
     installFooter(ctx);
 
@@ -752,21 +673,15 @@ export default function (pi: ExtensionAPI) {
     refreshFooter();
 
     if (failed.length > 0) {
-      ctx.ui.notify(
-        `mcp: ${failed.join(", ")} need /mcp-login`,
-        "info"
-      );
+      ctx.ui.notify(`mcp: ${failed.join(", ")} need /mcp-login`, "info");
     }
   });
 
-  // ── Cleanup on shutdown ───────────────────────────────────────────
   pi.on("session_shutdown", async () => {
     for (const [name] of states) {
       await disconnectServer(name);
     }
   });
-
-  // ── Commands ──────────────────────────────────────────────────────
 
   pi.registerCommand("mcp-add", {
     description: "Add an MCP server: /mcp-add [--local] <name> <url>",
@@ -793,15 +708,9 @@ export default function (pi: ExtensionAPI) {
       saveServers(servers);
 
       if (isLocal) {
-        ctx.ui.notify(
-          `Added local ${name} → ${url}. Run /mcp-reconnect ${name} to connect.`,
-          "info"
-        );
+        ctx.ui.notify(`Added local ${name} → ${url}. Run /mcp-reconnect ${name} to connect.`, "info");
       } else {
-        ctx.ui.notify(
-          `Added ${name} → ${url} (port ${config.port}). Run /mcp-login ${name} to authenticate.`,
-          "info"
-        );
+        ctx.ui.notify(`Added ${name} → ${url} (port ${config.port}). Run /mcp-login ${name} to authenticate.`, "info");
       }
     },
   });
@@ -816,17 +725,15 @@ export default function (pi: ExtensionAPI) {
       }
 
       await disconnectServer(name);
-
       const servers = loadServers().filter((s) => s.name !== name);
       saveServers(servers);
 
-      removeFile(tokensFile(name));
+      clearStoredTokens(name);
       removeFile(clientFile(name));
       removeFile(verifierFile(name));
 
       states.delete(name);
       refreshFooter();
-
       ctx.ui.notify(`Removed ${name} and cleared all credentials.`, "info");
     },
   });
@@ -842,10 +749,7 @@ export default function (pi: ExtensionAPI) {
 
       const config = getServer(name);
       if (!config) {
-        ctx.ui.notify(
-          `Server "${name}" not found. Add it first with /mcp-add ${name} <url>`,
-          "error"
-        );
+        ctx.ui.notify(`Server "${name}" not found. Add it first with /mcp-add ${name} <url>`, "error");
         return;
       }
 
@@ -863,7 +767,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       await disconnectServer(name);
-      removeFile(tokensFile(name));
+      clearStoredTokens(name);
       removeFile(verifierFile(name));
 
       refreshFooter();
@@ -885,12 +789,7 @@ export default function (pi: ExtensionAPI) {
         await disconnectServer(name);
         const ok = await connectServer(config, ctx);
         refreshFooter();
-        ctx.ui.notify(
-          ok
-            ? `${name} reconnected`
-            : `${name} failed — try /mcp-login ${name}`,
-          ok ? "info" : "error"
-        );
+        ctx.ui.notify(ok ? `${name} reconnected` : `${name} failed — try /mcp-login ${name}`, ok ? "info" : "error");
       } else {
         const servers = loadServers();
         for (const config of servers) {
@@ -907,10 +806,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const servers = loadServers();
       if (servers.length === 0) {
-        ctx.ui.notify(
-          "No MCP servers configured. Use /mcp-add <name> <url>",
-          "info"
-        );
+        ctx.ui.notify("No MCP servers configured. Use /mcp-add <name> <url>", "info");
         return;
       }
 
@@ -921,6 +817,7 @@ export default function (pi: ExtensionAPI) {
         const toolCount = state?.tools.length ?? 0;
         lines.push(`  ${config.name} — ${status}, ${toolCount} tools`);
         lines.push(`    ${config.url}`);
+        lines.push(`    token path: ${piTokensFile(config.name)}`);
         if (state?.tools.length) {
           for (const t of state.tools) lines.push(`    - ${t}`);
         }
@@ -931,12 +828,10 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // ── LLM tool for checking status ──────────────────────────────────
   pi.registerTool({
     name: "mcp_status",
     label: "MCP: Status",
-    description:
-      "List configured MCP servers, their connection status, and registered tools.",
+    description: "List configured MCP servers, their connection status, and registered tools.",
     parameters: {} as any,
     async execute() {
       const servers = loadServers();
@@ -948,9 +843,8 @@ export default function (pi: ExtensionAPI) {
       for (const config of servers) {
         const state = states.get(config.name);
         const status = state?.connected ? "connected" : "disconnected";
-        lines.push(
-          `${config.name}: ${status} (${state?.tools.length ?? 0} tools) — ${config.url}`
-        );
+        lines.push(`${config.name}: ${status} (${state?.tools.length ?? 0} tools) — ${config.url}`);
+        lines.push(`  token path: ${piTokensFile(config.name)}`);
         if (state?.tools.length) {
           for (const t of state.tools) lines.push(`  • ${t}`);
         }

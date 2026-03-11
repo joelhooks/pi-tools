@@ -79,9 +79,9 @@ Commands: `/mcp-add`, `/mcp-remove`, `/mcp-login`, `/mcp-logout`, `/mcp-list`, `
 
 Tool: `mcp_status`
 
-State stored in `~/.pi/mcp-bridge/` (OAuth client registrations, tokens, PKCE verifiers). Tools from each server are registered as `<name>_<tool>` (e.g., `notion_search`, `notion_update_block`).
+Bridge metadata is stored in `~/.pi/mcp-bridge/` (OAuth client registrations, cached tokens, PKCE verifiers). OAuth tokens are also written to Pi's native MCP auth path at `~/.pi/agent/mcp-oauth/<name>/tokens.json` so Pi-compatible flows can reuse them. Tools from each server are registered as `<name>_<tool>` (e.g., `notion_search`, `notion_update_block`).
 
-On session start, auto-connects to all servers with saved tokens. If tokens are expired, shows a status warning — run `/mcp-login <name>` to re-auth.
+On session start, auto-connects to all servers with saved tokens. If tokens are expired or invalid, the bridge clears stale credentials and shows a status warning — run `/mcp-login <name>` to re-auth.
 
 Requires `@modelcontextprotocol/sdk` (installed by `setup.sh`).
 
