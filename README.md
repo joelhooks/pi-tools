@@ -8,7 +8,7 @@
 
 # pi-tools
 
-> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Type-check with the TypeScript 7 native compiler. Farm work out to Codex in background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
+> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Farm work out to Codex in background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
 
 ## Install
 

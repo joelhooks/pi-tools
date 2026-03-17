@@ -37,11 +37,6 @@ check ast-grep || install_brew ast-grep
 echo ""
 echo "Optional:"
 
-if ! check tsgo; then
-  echo "  📦 npm install -g @typescript/native-preview..."
-  npm install -g @typescript/native-preview 2>&1 | tail -1
-fi
-
 if ! check secrets; then
   echo "  📦 Installing agent-secrets..."
   curl -fsSL https://raw.githubusercontent.com/joelhooks/agent-secrets/main/install.sh | bash
