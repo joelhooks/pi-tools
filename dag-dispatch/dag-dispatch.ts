@@ -81,6 +81,18 @@ export default function dagDispatch(pi: ExtensionAPI) {
           status: "running",
         });
 
+        // Register with job monitor widget if available
+        const monitor = (globalThis as any).__jobMonitor;
+        if (monitor?.addJob) {
+          monitor.addJob({
+            id: workflowId,
+            type: "dag",
+            label: `${params.pipeline} (${params.nodes.length} nodes)`,
+            status: "running",
+            startedAt: Date.now(),
+          });
+        }
+
         return {
           content: [{
             type: "text" as const,
