@@ -5,7 +5,7 @@
  *   - session_start:     Set "Idle" status, auto-name session via haiku.
  *   - agent_start:       Set sidebar to "Running" (blue bolt).
  *   - tool_execution_start: Verbose mode — show tool name in sidebar.
- *   - agent_end:         Set sidebar to "Idle" (gray pause) + send notification + peon-ping.
+ *   - agent_end:         Set sidebar to "Needs input" (blue bell) + cmux notification + peon-ping.
  *   - session_shutdown:  Clear status and agent PID.
  *
  * Session naming:
@@ -182,9 +182,7 @@ let _hasNamedSession = false;
 
 function generateTurnSummary(assistantText: string, cwd: string): void {
   if (!assistantText || assistantText.length < 10) {
-    // Too short to summarize, just show idle
-    setStatus(STATUS_IDLE);
-    return;
+    return; // Too short to summarize, keep current status (needs input)
   }
 
   // Truncate to keep the haiku call cheap
@@ -219,7 +217,7 @@ function generateTurnSummary(assistantText: string, cwd: string): void {
     child.on("close", () => {
       const summary = output.trim().slice(0, 50);
       if (summary && summary.length > 1) {
-        cmuxSafe("set-status", STATUS_KEY, summary, "--icon", "pause.circle.fill", "--color", "#8E8E93");
+        cmuxSafe("set-status", STATUS_KEY, summary, "--icon", "bell.fill", "--color", "#4C8DFF");
       }
     });
   } catch {
@@ -318,8 +316,8 @@ export default function cmuxExtension(pi: ExtensionAPI) {
 
   // ── Lifecycle: agent done → idle + summary, peon-ping ──
   pi.on("agent_end", async (event, ctx) => {
-    // Set idle immediately (summary will overwrite async)
-    setStatus(STATUS_IDLE);
+    // Set needs-input immediately (summary will overwrite async, keeping bell icon)
+    setStatus(STATUS_NEEDS_INPUT);
 
     // Extract last assistant message text for summary
     let lastAssistantText = "";
@@ -336,10 +334,12 @@ export default function cmuxExtension(pi: ExtensionAPI) {
       }
     }
 
-    // Async: generate tiny summary for sidebar
+    // Async: generate tiny summary for sidebar (keeps bell icon)
     generateTurnSummary(lastAssistantText, ctx.cwd);
 
-    // Play peon-ping sound if available
+    // cmux notification + peon-ping sound
+    const sessionName = pi.getSessionName();
+    notify("pi", sessionName ? `${sessionName} — waiting for input` : "Waiting for input");
     playPeonPing("stop");
   });
 
