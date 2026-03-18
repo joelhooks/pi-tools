@@ -259,12 +259,6 @@ export default function cmuxExtension(pi: ExtensionAPI) {
   pi.on("agent_end", async (_event, ctx) => {
     setStatus(STATUS_IDLE);
 
-    const sessionName = pi.getSessionName();
-    const subtitle = sessionName || path.basename(ctx.cwd);
-
-    // Send notification so user sees pi is waiting
-    notify("pi", "Turn complete — waiting for input", subtitle);
-
     // Play peon-ping sound if available
     playPeonPing("stop");
   });
