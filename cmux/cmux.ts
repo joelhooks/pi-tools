@@ -35,6 +35,8 @@ import * as path from "node:path";
 const STATUS_KEY = "pi_agent";
 const VERBOSE_STATUS = process.env.PI_CMUX_VERBOSE_STATUS === "1";
 const NAMING_MODEL = process.env.PI_CMUX_NAMING_MODEL || "claude-haiku-4-5";
+// Helper pi subprocesses must not reload this extension or they recurse forever.
+const CMUX_CHILD_ENV = "PI_CMUX_CHILD";
 
 // SF Symbols + colors matching cmux Claude Code integration
 const STATUS_RUNNING = { value: "Running", icon: "bolt.fill", color: "#4C8DFF" };
@@ -141,6 +143,8 @@ function generateSessionName(prompt: string, cwd: string): void {
     const child = spawn("pi", [
       "-p",
       "--model", NAMING_MODEL,
+      "--no-session",
+      "--no-extensions",
       "--no-tools",
       "--no-skills",
       "--no-prompt-templates",
@@ -149,7 +153,7 @@ function generateSessionName(prompt: string, cwd: string): void {
     ], {
       stdio: ["pipe", "pipe", "ignore"],
       timeout: 15000,
-      env: process.env,
+      env: { ...process.env, [CMUX_CHILD_ENV]: "1" },
     });
 
     let output = "";
@@ -189,6 +193,8 @@ function generateTurnSummary(assistantText: string, cwd: string): void {
     const child = spawn("pi", [
       "-p",
       "--model", NAMING_MODEL,
+      "--no-session",
+      "--no-extensions",
       "--no-tools",
       "--no-skills",
       "--no-prompt-templates",
@@ -197,7 +203,7 @@ function generateTurnSummary(assistantText: string, cwd: string): void {
     ], {
       stdio: ["pipe", "pipe", "ignore"],
       timeout: 10000,
-      env: process.env,
+      env: { ...process.env, [CMUX_CHILD_ENV]: "1" },
     });
 
     let output = "";
@@ -258,6 +264,7 @@ function shortenPath(p: string): string {
 // ── Extension ──────────────────────────────────────────
 
 export default function cmuxExtension(pi: ExtensionAPI) {
+  if (process.env[CMUX_CHILD_ENV] === "1") return;
   if (!hasCmux()) return; // silently skip when not in cmux
 
   // Detect peon-ping on load
@@ -265,6 +272,8 @@ export default function cmuxExtension(pi: ExtensionAPI) {
 
   // ── Lifecycle: session start — just set idle, no log spam ──
   pi.on("session_start", async (_event, ctx) => {
+    _pendingSessionName = null;
+    _hasNamedSession = Boolean(pi.getSessionName());
     setStatus(STATUS_IDLE);
   });
 
@@ -331,6 +340,8 @@ export default function cmuxExtension(pi: ExtensionAPI) {
 
   // ── Lifecycle: session shutdown ──
   pi.on("session_shutdown", async () => {
+    _pendingSessionName = null;
+    _hasNamedSession = false;
     clearStatus();
     cmuxSafe("clear-progress");
   });

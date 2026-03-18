@@ -217,3 +217,39 @@ A native notification fires on every `agent_end` so the user knows pi is waiting
 The `cmux` tool allows these actions: `tree`, `identify`, `list-workspaces`, `current-workspace`, `read-screen`, `send`, `send-key`, `new-workspace`, `new-split`, `new-pane`, `new-surface`, `select-workspace`, `close-surface`, `close-workspace`, `list-panes`, `list-pane-surfaces`, `focus-pane`, `rename-workspace`, `surface-health`.
 
 For browser control, use `new-pane` with `--type browser` to create browser surfaces. For advanced browser automation, use the `agent-browser` skill or `cmux browser` subcommands via bash.
+
+## Extension Safety: Fork-Bomb Prevention
+
+The cmux extension spawns helper `pi -p` subprocesses for session naming and turn summaries. Without proper guards, each child process loads the cmux extension again, fires the same hooks, and spawns another child — exponential process explosion.
+
+**Three-layer defense (all required):**
+
+1. **`--no-extensions` flag** on every `pi -p` spawn — prevents the child from loading any extensions, including cmux itself. This is the critical flag; `--no-tools`/`--no-skills` alone are not enough.
+
+2. **`--no-session` flag** — prevents the child from creating session files, which would compound the recursion with disk I/O.
+
+3. **`PI_CMUX_CHILD` env guard** — the extension sets `PI_CMUX_CHILD=1` in the child's environment and bails out at the top of `cmuxExtension()` if that var is set. Belt-and-suspenders defense in case `--no-extensions` is somehow bypassed.
+
+```typescript
+// Top of extension — bail if we're a helper subprocess
+if (process.env[CMUX_CHILD_ENV] === "1") return;
+
+// Every pi subprocess spawn must include:
+spawn("pi", [
+  "-p",
+  "--model", NAMING_MODEL,
+  "--no-session",      // ← no session files
+  "--no-extensions",   // ← THE critical flag — prevents self-recursion
+  "--no-tools",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--system-prompt", "...",
+], {
+  env: { ...process.env, [CMUX_CHILD_ENV]: "1" },  // ← env guard
+});
+```
+
+**State resets on lifecycle events:**
+
+- `session_start`: reset `_pendingSessionName` and `_hasNamedSession`
+- `session_shutdown`: reset both to prevent stale state across `/continue` sessions
