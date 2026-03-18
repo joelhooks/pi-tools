@@ -2,11 +2,19 @@
  * cmux — pi ↔ cmux integration extension.
  *
  * Lifecycle hooks:
- *   - session_start:     Register agent PID, set initial "Idle" status.
+ *   - session_start:     Set "Idle" status, auto-name session via haiku.
  *   - agent_start:       Set sidebar to "Running" (blue bolt).
  *   - tool_execution_start: Verbose mode — show tool name in sidebar.
- *   - agent_end:         Set sidebar to "Idle" (gray pause) + send notification.
+ *   - agent_end:         Set sidebar to "Idle" (gray pause) + send notification + peon-ping.
  *   - session_shutdown:  Clear status and agent PID.
+ *
+ * Session naming:
+ *   On first user prompt, spawns a cheap haiku call to generate a 2-4 word
+ *   session name from the prompt + cwd. Sets it via pi.setSessionName() so
+ *   it shows in the footer and cmux workspace title.
+ *
+ * peon-ping:
+ *   If peon-ping is installed, plays notification sounds on agent_end.
  *
  * Tools:
  *   - cmux:        General workspace/pane/surface control — tree, read, send, split, etc.
@@ -19,18 +27,19 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { execSync, execFileSync } from "node:child_process";
+import { execSync, execFileSync, spawn } from "node:child_process";
+import * as path from "node:path";
 
 // ── Config ─────────────────────────────────────────────
 
 const STATUS_KEY = "pi_agent";
 const VERBOSE_STATUS = process.env.PI_CMUX_VERBOSE_STATUS === "1";
+const NAMING_MODEL = process.env.PI_CMUX_NAMING_MODEL || "claude-haiku-4-5";
 
 // SF Symbols + colors matching cmux Claude Code integration
 const STATUS_RUNNING = { value: "Running", icon: "bolt.fill", color: "#4C8DFF" };
 const STATUS_IDLE = { value: "Idle", icon: "pause.circle.fill", color: "#8E8E93" };
 const STATUS_NEEDS_INPUT = { value: "Needs input", icon: "bell.fill", color: "#4C8DFF" };
-const STATUS_STARTING = { value: "Starting", icon: "circle.dashed", color: "#8E8E93" };
 
 // ── cmux CLI wrapper ───────────────────────────────────
 
@@ -64,6 +73,45 @@ function hasCmux(): boolean {
   }
 }
 
+// ── peon-ping detection ────────────────────────────────
+
+let peonPath: string | null = null;
+
+function detectPeonPing(): string | null {
+  // Check common locations
+  const candidates = [
+    `${process.env.HOME}/.claude/hooks/peon-ping/peon.sh`,
+    `${process.env.HOME}/.openpeon/peon.sh`,
+  ];
+  for (const p of candidates) {
+    try {
+      execSync(`test -f "${p}"`, { timeout: 1000 });
+      return p;
+    } catch {}
+  }
+  // Check PATH
+  try {
+    const which = execSync("which peon", { encoding: "utf-8", timeout: 1000 }).trim();
+    if (which) return which;
+  } catch {}
+  return null;
+}
+
+function playPeonPing(event: "stop" | "notification"): void {
+  if (!peonPath) return;
+  try {
+    // peon.sh reads hook event type from stdin JSON
+    const child = spawn("bash", [peonPath], {
+      stdio: ["pipe", "ignore", "ignore"],
+      detached: true,
+      env: { ...process.env, CLAUDE_HOOK_EVENT_NAME: event === "stop" ? "Stop" : "Notification" },
+    });
+    child.stdin?.write(JSON.stringify({ event: event === "stop" ? "Stop" : "Notification" }));
+    child.stdin?.end();
+    child.unref();
+  } catch {}
+}
+
 // ── Sidebar status helpers ─────────────────────────────
 
 function setStatus(status: { value: string; icon: string; color: string }): void {
@@ -82,6 +130,47 @@ function notify(title: string, body?: string, subtitle?: string): void {
   if (body) args.push("--body", body);
   cmuxSafe(...args);
 }
+
+// ── Session naming ─────────────────────────────────────
+
+function generateSessionName(prompt: string, cwd: string): void {
+  const dirName = path.basename(cwd);
+  const input = `Project directory: ${dirName}\nFirst prompt: ${prompt.slice(0, 300)}`;
+
+  try {
+    const child = spawn("pi", [
+      "-p",
+      "--model", NAMING_MODEL,
+      "--no-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--system-prompt",
+      "You are a session namer. Given a project directory and first user prompt, reply with ONLY a short 2-4 word session name that captures what the user is working on. No quotes, no explanation, no punctuation. Examples: 'cmux sidebar integration', 'auth refactor', 'deploy pipeline fix'",
+    ], {
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 15000,
+      env: process.env,
+    });
+
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+
+    child.stdin?.write(input);
+    child.stdin?.end();
+
+    child.on("close", () => {
+      const name = output.trim().slice(0, 60);
+      if (name && name.length > 1) {
+        _pendingSessionName = name;
+      }
+    });
+  } catch {}
+}
+
+let _pendingSessionName: string | null = null;
+let _hasNamedSession = false;
 
 // ── Tool description helper ────────────────────────────
 
@@ -124,17 +213,39 @@ function shortenPath(p: string): string {
 export default function cmuxExtension(pi: ExtensionAPI) {
   if (!hasCmux()) return; // silently skip when not in cmux
 
-  // ── Lifecycle: session start ──
-  pi.on("session_start", async (_event, ctx) => {
-    setStatus(STATUS_STARTING);
+  // Detect peon-ping on load
+  peonPath = detectPeonPing();
 
-    // Log to cmux sidebar
-    cmuxSafe("log", "--level", "info", "--source", "pi", "Session started");
+  // ── Lifecycle: session start — just set idle, no log spam ──
+  pi.on("session_start", async (_event, ctx) => {
+    setStatus(STATUS_IDLE);
+  });
+
+  // ── Lifecycle: first prompt → auto-name session ──
+  pi.on("before_agent_start", async (event, ctx) => {
+    // Name the session from the first user prompt
+    if (!_hasNamedSession && event.prompt) {
+      _hasNamedSession = true;
+
+      // If session already has a name (e.g. from /continue), skip
+      const existing = pi.getSessionName();
+      if (!existing) {
+        generateSessionName(event.prompt, ctx.cwd);
+      }
+    }
   });
 
   // ── Lifecycle: agent running ──
   pi.on("agent_start", async () => {
     setStatus(STATUS_RUNNING);
+
+    // Apply pending session name from async haiku call
+    if (_pendingSessionName) {
+      pi.setSessionName(_pendingSessionName);
+      // Also update cmux workspace title
+      cmuxSafe("rename-workspace", _pendingSessionName);
+      _pendingSessionName = null;
+    }
   });
 
   // ── Lifecycle: tool execution (verbose mode) ──
@@ -144,19 +255,34 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     cmuxSafe("set-status", STATUS_KEY, desc, "--icon", "bolt.fill", "--color", "#4C8DFF");
   });
 
-  // ── Lifecycle: agent done → idle, notify ──
+  // ── Lifecycle: agent done → idle, notify, peon-ping ──
   pi.on("agent_end", async (_event, ctx) => {
     setStatus(STATUS_IDLE);
 
+    const sessionName = pi.getSessionName();
+    const subtitle = sessionName || path.basename(ctx.cwd);
+
     // Send notification so user sees pi is waiting
-    notify("pi", "Turn complete — waiting for input");
+    notify("pi", "Turn complete — waiting for input", subtitle);
+
+    // Play peon-ping sound if available
+    playPeonPing("stop");
   });
 
   // ── Lifecycle: session shutdown ──
   pi.on("session_shutdown", async () => {
     clearStatus();
     cmuxSafe("clear-progress");
-    cmuxSafe("log", "--level", "info", "--source", "pi", "Session ended");
+  });
+
+  // ── System prompt: encourage session naming ──
+  pi.on("context", async () => {
+    // Apply pending name if it arrived between turns
+    if (_pendingSessionName) {
+      pi.setSessionName(_pendingSessionName);
+      cmuxSafe("rename-workspace", _pendingSessionName);
+      _pendingSessionName = null;
+    }
   });
 
   // ────────────────────────────────────────────────────────
@@ -228,7 +354,6 @@ export default function cmuxExtension(pi: ExtensionAPI) {
       const txt = result.content[0];
       const text = txt?.type === "text" ? txt.text : "";
       const icon = result.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-      // Show first 3 lines collapsed, full when expanded
       const lines = text.split("\n");
       const preview = lines.slice(0, 5).join("\n");
       const suffix = lines.length > 5 ? theme.fg("dim", `\n… ${lines.length - 5} more lines`) : "";
