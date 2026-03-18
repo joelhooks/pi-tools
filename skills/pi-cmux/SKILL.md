@@ -205,12 +205,13 @@ The cmux extension automatically manages a `pi_agent` sidebar status entry:
 
 | Pi Event | Sidebar Status | Icon | Color |
 |----------|---------------|------|-------|
-| Session start | Starting | `circle.dashed` | gray |
+| Session start | Idle + session name (if resuming) | `pause.circle.fill` / `text.bubble` | gray |
+| First prompt | Generates session name → shown as `session` status entry | `text.bubble` | gray |
 | Agent starts working | Running | `bolt.fill` | blue |
-| Agent turn complete | Idle | `pause.circle.fill` | gray |
-| Session shutdown | *cleared* | — | — |
+| Agent turn complete | Idle + turn summary | `pause.circle.fill` | gray |
+| Session shutdown | *all cleared* | — | — |
 
-A native notification fires on every `agent_end` so the user knows pi is waiting for input. Set `PI_CMUX_VERBOSE_STATUS=1` to see per-tool updates (e.g. "Reading ~/.zshrc", "Running grep").
+The session name appears as a sidebar status entry (key `session`) — the workspace label is never modified by the extension and is left to the operator. A native notification fires on every `agent_end` so the user knows pi is waiting for input. Set `PI_CMUX_VERBOSE_STATUS=1` to see per-tool updates (e.g. "Reading ~/.zshrc", "Running grep").
 
 ## Allowed Actions
 

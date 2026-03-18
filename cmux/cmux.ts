@@ -11,7 +11,8 @@
  * Session naming:
  *   On first user prompt, spawns a cheap haiku call to generate a 2-4 word
  *   session name from the prompt + cwd. Sets it via pi.setSessionName() so
- *   it shows in the footer and cmux workspace title.
+ *   it shows in the footer. Also displayed as the first sidebar status entry
+ *   (key "session"). Workspace label is never touched — left to the operator.
  *
  * peon-ping:
  *   If peon-ping is installed, plays notification sounds on agent_end.
@@ -33,6 +34,7 @@ import * as path from "node:path";
 // ── Config ─────────────────────────────────────────────
 
 const STATUS_KEY = "pi_agent";
+const SESSION_NAME_KEY = "session";
 const VERBOSE_STATUS = process.env.PI_CMUX_VERBOSE_STATUS === "1";
 const NAMING_MODEL = process.env.PI_CMUX_NAMING_MODEL || "claude-haiku-4-5";
 // Helper pi subprocesses must not reload this extension or they recurse forever.
@@ -270,11 +272,15 @@ export default function cmuxExtension(pi: ExtensionAPI) {
   // Detect peon-ping on load
   peonPath = detectPeonPing();
 
-  // ── Lifecycle: session start — just set idle, no log spam ──
+  // ── Lifecycle: session start — set idle, restore session name if resuming ──
   pi.on("session_start", async (_event, ctx) => {
     _pendingSessionName = null;
-    _hasNamedSession = Boolean(pi.getSessionName());
+    const existingName = pi.getSessionName();
+    _hasNamedSession = Boolean(existingName);
     setStatus(STATUS_IDLE);
+    if (existingName) {
+      cmuxSafe("set-status", SESSION_NAME_KEY, existingName, "--icon", "text.bubble", "--color", "#8E8E93");
+    }
   });
 
   // ── Lifecycle: first prompt → auto-name session ──
@@ -298,8 +304,7 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     // Apply pending session name from async haiku call
     if (_pendingSessionName) {
       pi.setSessionName(_pendingSessionName);
-      // Also update cmux workspace title
-      cmuxSafe("rename-workspace", _pendingSessionName);
+      cmuxSafe("set-status", SESSION_NAME_KEY, _pendingSessionName, "--icon", "text.bubble", "--color", "#8E8E93");
       _pendingSessionName = null;
     }
   });
@@ -343,15 +348,15 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     _pendingSessionName = null;
     _hasNamedSession = false;
     clearStatus();
+    cmuxSafe("clear-status", SESSION_NAME_KEY);
     cmuxSafe("clear-progress");
   });
 
-  // ── System prompt: encourage session naming ──
+  // ── Apply pending session name between turns ──
   pi.on("context", async () => {
-    // Apply pending name if it arrived between turns
     if (_pendingSessionName) {
       pi.setSessionName(_pendingSessionName);
-      cmuxSafe("rename-workspace", _pendingSessionName);
+      cmuxSafe("set-status", SESSION_NAME_KEY, _pendingSessionName, "--icon", "text.bubble", "--color", "#8E8E93");
       _pendingSessionName = null;
     }
   });
