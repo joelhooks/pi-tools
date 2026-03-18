@@ -172,6 +172,53 @@ function generateSessionName(prompt: string, cwd: string): void {
 let _pendingSessionName: string | null = null;
 let _hasNamedSession = false;
 
+// ── Turn summary for sidebar ───────────────────────────
+
+function generateTurnSummary(assistantText: string, cwd: string): void {
+  if (!assistantText || assistantText.length < 10) {
+    // Too short to summarize, just show idle
+    setStatus(STATUS_IDLE);
+    return;
+  }
+
+  // Truncate to keep the haiku call cheap
+  const truncated = assistantText.slice(0, 800);
+  const dirName = path.basename(cwd);
+
+  try {
+    const child = spawn("pi", [
+      "-p",
+      "--model", NAMING_MODEL,
+      "--no-tools",
+      "--no-skills",
+      "--no-prompt-templates",
+      "--system-prompt",
+      "Summarize what was just done in 3-8 words for a sidebar status. No quotes, no periods. Examples: 'Added cmux extension + tests', 'Fixed auth redirect bug', 'Refactored DB queries', 'Waiting for deploy config'",
+    ], {
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 10000,
+      env: process.env,
+    });
+
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+
+    child.stdin?.write(`Project: ${dirName}\nAssistant just said:\n${truncated}`);
+    child.stdin?.end();
+
+    child.on("close", () => {
+      const summary = output.trim().slice(0, 50);
+      if (summary && summary.length > 1) {
+        cmuxSafe("set-status", STATUS_KEY, summary, "--icon", "pause.circle.fill", "--color", "#8E8E93");
+      }
+    });
+  } catch {
+    // Fall through — status stays as Idle from the sync call
+  }
+}
+
 // ── Tool description helper ────────────────────────────
 
 function describeToolUse(toolName: string, args: any): string {
@@ -255,9 +302,28 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     cmuxSafe("set-status", STATUS_KEY, desc, "--icon", "bolt.fill", "--color", "#4C8DFF");
   });
 
-  // ── Lifecycle: agent done → idle, notify, peon-ping ──
-  pi.on("agent_end", async (_event, ctx) => {
+  // ── Lifecycle: agent done → idle + summary, peon-ping ──
+  pi.on("agent_end", async (event, ctx) => {
+    // Set idle immediately (summary will overwrite async)
     setStatus(STATUS_IDLE);
+
+    // Extract last assistant message text for summary
+    let lastAssistantText = "";
+    for (let i = event.messages.length - 1; i >= 0; i--) {
+      const msg = event.messages[i] as any;
+      if (msg.role === "assistant" && msg.content) {
+        for (const block of msg.content) {
+          if (block.type === "text" && block.text) {
+            lastAssistantText = block.text;
+            break;
+          }
+        }
+        if (lastAssistantText) break;
+      }
+    }
+
+    // Async: generate tiny summary for sidebar
+    generateTurnSummary(lastAssistantText, ctx.cwd);
 
     // Play peon-ping sound if available
     playPeonPing("stop");
