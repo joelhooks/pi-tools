@@ -203,15 +203,19 @@ cmux action="new-pane" args=["--type", "browser", "--url", "http://localhost:300
 
 The cmux extension automatically manages a `pi_agent` sidebar status entry:
 
-| Pi Event | Sidebar Status | Icon | Color |
-|----------|---------------|------|-------|
-| Session start | Idle + session name (if resuming) | `pause.circle.fill` / `text.bubble` | gray |
-| First prompt | Generates session name → shown as `session` status entry | `text.bubble` | gray |
-| Agent starts working | Running | `bolt.fill` | blue |
-| Agent turn complete | Idle + turn summary | `pause.circle.fill` | gray |
-| Session shutdown | *all cleared* | — | — |
+| Pi Event | Sidebar Status | Icon | Color | Tab Indicator |
+|----------|---------------|------|-------|---------------|
+| Session start | Idle + session name (if resuming) | `pause.circle.fill` / `text.bubble` | gray | mark-read, clear notifications |
+| Agent starts working | Running | `bolt.fill` | blue | mark-read, clear notifications |
+| Tool execution | Live activity (e.g. "Reading ~/.zshrc") | `bolt.fill` | blue | — |
+| Agent turn complete | Needs input + turn summary | `bell.fill` | blue | **mark-unread** + notification |
+| Session shutdown | *all cleared* | — | — | mark-read, clear notifications |
 
-The session name appears as a sidebar status entry (key `session`) — the workspace label is never modified by the extension and is left to the operator. A native notification fires on every `agent_end` so the user knows pi is waiting for input. Set `PI_CMUX_VERBOSE_STATUS=1` to see per-tool updates (e.g. "Reading ~/.zshrc", "Running grep").
+The session name appears as a sidebar status entry (key `session`) — the workspace label is never modified by the extension and is left to the operator.
+
+**Live tool activity**: Every tool execution updates the sidebar status with what pi is doing (e.g. "Reading ~/.zshrc", "Running grep", "Editing auth.ts"). This is always on and visible from other workspaces — useful for monitoring pi while focused elsewhere.
+
+**Attention cycle**: When the agent finishes a turn, the workspace tab is marked unread (lights up) and a cmux notification fires. When the user provides input and the agent starts working again, the tab is marked read and notifications are cleared. This gives a clean read/unread signal across workspaces.
 
 ## Allowed Actions
 

@@ -4,8 +4,8 @@
  * Lifecycle hooks:
  *   - session_start:     Set "Idle" status, auto-name session via haiku.
  *   - agent_start:       Set sidebar to "Running" (blue bolt).
- *   - tool_execution_start: Verbose mode — show tool name in sidebar.
- *   - agent_end:         Set sidebar to "Needs input" (blue bell) + cmux notification + peon-ping.
+ *   - tool_execution_start: Live tool activity in sidebar (visible from other workspaces).
+ *   - agent_end:         "Needs input" (blue bell) + cmux notification + mark-unread + peon-ping.
  *   - session_shutdown:  Clear status and agent PID.
  *
  * Session naming:
@@ -35,7 +35,6 @@ import * as path from "node:path";
 
 const STATUS_KEY = "pi_agent";
 const SESSION_NAME_KEY = "session";
-const VERBOSE_STATUS = process.env.PI_CMUX_VERBOSE_STATUS === "1";
 const NAMING_MODEL = process.env.PI_CMUX_NAMING_MODEL || "claude-haiku-4-5";
 // Helper pi subprocesses must not reload this extension or they recurse forever.
 const CMUX_CHILD_ENV = "PI_CMUX_CHILD";
@@ -270,11 +269,15 @@ export default function cmuxExtension(pi: ExtensionAPI) {
   // Detect peon-ping on load
   peonPath = detectPeonPing();
 
-  // ── Lifecycle: session start — set idle, restore session name if resuming ──
+  // ── Lifecycle: session start — clean slate ──
   pi.on("session_start", async (_event, ctx) => {
     _pendingSessionName = null;
     const existingName = pi.getSessionName();
     _hasNamedSession = Boolean(existingName);
+    // Clear stale state from previous sessions
+    cmuxSafe("clear-notifications");
+    cmuxSafe("clear-log");
+    cmuxSafe("workspace-action", "--action", "mark-read");
     setStatus(STATUS_IDLE);
     if (existingName) {
       cmuxSafe("set-status", SESSION_NAME_KEY, existingName, "--icon", "text.bubble", "--color", "#8E8E93");
@@ -295,8 +298,10 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     }
   });
 
-  // ── Lifecycle: agent running ──
+  // ── Lifecycle: agent running — clear attention state ──
   pi.on("agent_start", async () => {
+    cmuxSafe("clear-notifications");
+    cmuxSafe("workspace-action", "--action", "mark-read");
     setStatus(STATUS_RUNNING);
 
     // Apply pending session name from async haiku call
@@ -307,9 +312,8 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     }
   });
 
-  // ── Lifecycle: tool execution (verbose mode) ──
+  // ── Lifecycle: tool execution — live status updates (visible from other workspaces) ──
   pi.on("tool_execution_start", async (event) => {
-    if (!VERBOSE_STATUS) return;
     const desc = describeToolUse(event.toolName, event.args);
     cmuxSafe("set-status", STATUS_KEY, desc, "--icon", "bolt.fill", "--color", "#4C8DFF");
   });
@@ -337,9 +341,10 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     // Async: generate tiny summary for sidebar (keeps bell icon)
     generateTurnSummary(lastAssistantText, ctx.cwd);
 
-    // cmux notification + peon-ping sound
+    // cmux notification + mark workspace unread so the tab lights up
     const sessionName = pi.getSessionName();
     notify("pi", sessionName ? `${sessionName} — waiting for input` : "Waiting for input");
+    cmuxSafe("workspace-action", "--action", "mark-unread");
     playPeonPing("stop");
   });
 
@@ -349,7 +354,9 @@ export default function cmuxExtension(pi: ExtensionAPI) {
     _hasNamedSession = false;
     clearStatus();
     cmuxSafe("clear-status", SESSION_NAME_KEY);
+    cmuxSafe("clear-notifications");
     cmuxSafe("clear-progress");
+    cmuxSafe("workspace-action", "--action", "mark-read");
   });
 
   // ── Apply pending session name between turns ──
