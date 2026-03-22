@@ -22,11 +22,17 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 
 // ── Pi worker configuration ────────────────────────────
+// NOTE: Do NOT use import.meta here. jiti evaluates extensions via
+// vm.runInThisContext() wrapped in an async function — import.meta is
+// only valid inside ES modules and causes SyntaxError in that context,
+// which cascades into an unrecoverable CJS/ESM ambiguity error.
 
-const EXT_DIR = import.meta.dir ?? dirname(fileURLToPath(import.meta.url)); // ralph-loop/
+// jiti's wrapper provides __dirname, so use that directly.
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — __dirname is injected by jiti's CJS wrapper at runtime
+const EXT_DIR: string = typeof __dirname !== "undefined" ? __dirname : dirname(".");
 const PI_TOOLS_DIR = dirname(EXT_DIR);                  // pi-tools/
 
 const WORKER_PROMPT_PATH = join(EXT_DIR, "worker-prompt.md");
