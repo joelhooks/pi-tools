@@ -22,10 +22,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 // ── Pi worker configuration ────────────────────────────
 
-const EXT_DIR = import.meta.dir || __dirname;           // ralph-loop/
+const EXT_DIR = import.meta.dir ?? dirname(fileURLToPath(import.meta.url)); // ralph-loop/
 const PI_TOOLS_DIR = dirname(EXT_DIR);                  // pi-tools/
 
 const WORKER_PROMPT_PATH = join(EXT_DIR, "worker-prompt.md");
