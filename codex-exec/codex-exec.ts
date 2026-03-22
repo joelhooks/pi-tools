@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { join, dirname } from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
@@ -153,6 +154,30 @@ function sanitize(s: string): string {
   return s.replace(/[\x00-\x1f\x7f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+// ── Extension paths ────────────────────────────────────
+
+const EXT_DIR = import.meta.dir || __dirname;
+const PI_TOOLS_DIR = dirname(EXT_DIR); // codex-exec/ is inside pi-tools/
+
+// Extensions to load for workers. Paths resolved from pi-tools root.
+// Excludes codex-exec itself (prevent recursion), mcq (interactive),
+// ralph-loop (orchestration), session-reader, skill-shortcut, auto-update, aliases.
+const WORKER_EXTENSIONS: string[] = [
+  join(PI_TOOLS_DIR, "bash-timeout/index.ts"),
+  join(PI_TOOLS_DIR, "web-search/web-search.ts"),
+  join(PI_TOOLS_DIR, "url-to-markdown/index.ts"),
+  join(PI_TOOLS_DIR, "repo-autopsy/index.ts"),
+  join(PI_TOOLS_DIR, "agent-secrets/agent-secrets.ts"),
+  join(PI_TOOLS_DIR, "memory-enforcer/index.ts"),
+];
+
+// Identity inject from joelclaw (loaded via symlink in pi-tools)
+const IDENTITY_INJECT_PATH = join(PI_TOOLS_DIR, "identity-inject/index.ts");
+
+const WORKER_PROMPT_PATH = join(EXT_DIR, "codex-worker-prompt.md");
+
+const DEFAULT_MODEL = "openai-codex/gpt-5.4";
+
 // ── Types ──────────────────────────────────────────────
 
 interface TaskItem {
@@ -161,6 +186,7 @@ interface TaskItem {
   prompt: string;
   sessionId: string | null;
   cwd: string;
+  model: string;
   status: "running" | "done" | "error" | "aborted";
   startedAt: number;
   finishedAt: number | null;
@@ -200,9 +226,6 @@ function fmtTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
-
-const DEFAULT_SANDBOX = "danger-full-access";
-const DEFAULT_APPROVAL_POLICY = "never";
 
 // ── Widget ─────────────────────────────────────────────
 
@@ -280,30 +303,110 @@ function renderWidget(theme: any): string[] {
   });
 }
 
-// ── Prompt wrapping ────────────────────────────────────
+// ── Pi JSONL Parser ────────────────────────────────────
 
-const WORKER_PREAMBLE = [
-  "You are a background worker agent. Complete the task efficiently.",
-  "",
-  "Guidelines:",
-  "- Focus on the work. Don't narrate each step.",
-  "- Report key milestones: files created/changed, tests passing/failing, blocking errors.",
-  "- Keep your final summary to 2-3 sentences: what you did and the outcome.",
-  "- If you hit a blocker you can't resolve, describe it clearly and stop.",
-  "",
-  "Task:",
-].join("\n");
+function parsePiEvent(line: string, task: TaskItem): void {
+  try {
+    const ev = JSON.parse(line);
 
-function wrapPrompt(prompt: string): string {
-  return WORKER_PREAMBLE + "\n" + prompt;
+    // Session metadata — extract session ID
+    if (ev.type === "session" && ev.id) {
+      task.sessionId = ev.id;
+      return;
+    }
+
+    // Assistant message end — extract tool calls, output text, usage
+    if (ev.type === "message_end" && ev.message?.role === "assistant") {
+      const msg = ev.message;
+
+      // Extract usage (accumulate across turns)
+      if (msg.usage) {
+        if (!task.usage) {
+          task.usage = { input: 0, cached: 0, output: 0 };
+        }
+        task.usage.input += msg.usage.input || 0;
+        task.usage.cached += msg.usage.cacheRead || 0;
+        task.usage.output += msg.usage.output || 0;
+      }
+
+      // Extract content items
+      if (Array.isArray(msg.content)) {
+        for (const item of msg.content) {
+          if (item.type === "toolCall") {
+            task.toolCalls.push({
+              type: item.name || "unknown",
+              text: item.partialJson
+                ? sanitize(item.partialJson).slice(0, 200)
+                : JSON.stringify(item.arguments || {}).slice(0, 200),
+            });
+          }
+          if (item.type === "text" && item.text) {
+            // Last text content is the final output
+            task.output = item.text;
+          }
+        }
+      }
+      return;
+    }
+
+    // Agent end — process is about to close
+    if (ev.type === "agent_end") {
+      return;
+    }
+  } catch {
+    // Ignore unparseable lines
+  }
 }
 
 // ── Process management ─────────────────────────────────
 
-function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
-  const proc = spawn("codex", args, {
+function buildPiArgs(task: TaskItem, params: {
+  prompt: string;
+  model?: string;
+  cwd?: string;
+  thinking?: string;
+  append_system_prompt?: string;
+}): string[] {
+  const args: string[] = [
+    "-p",                    // headless / non-interactive
+    "--mode", "json",        // JSONL output
+    "--no-session",          // ephemeral — no session persistence
+    "--no-extensions",       // disable discovery, use explicit -e below
+    "--model", params.model || DEFAULT_MODEL,
+    "--system-prompt", WORKER_PROMPT_PATH,
+  ];
+
+  // Add thinking level if specified
+  if (params.thinking) {
+    args.push("--thinking", params.thinking);
+  }
+
+  // Append system prompt for extra context
+  if (params.append_system_prompt) {
+    args.push("--append-system-prompt", params.append_system_prompt);
+  }
+
+  // Load curated extensions
+  for (const ext of WORKER_EXTENSIONS) {
+    args.push("-e", ext);
+  }
+  // Identity inject for joelclaw context
+  args.push("-e", IDENTITY_INJECT_PATH);
+
+  // The prompt goes last
+  args.push("--", params.prompt);
+
+  return args;
+}
+
+function spawnPi(task: TaskItem, args: string[], onDone: () => void): void {
+  const proc = spawn("pi", args, {
     cwd: task.cwd,
     stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      JOELCLAW_ROLE: "codex-worker",  // identity-inject picks up codex-worker role
+    },
   });
   task.proc = proc;
   ensureStatusTimer();
@@ -316,27 +419,7 @@ function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
     buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      try {
-        const ev = JSON.parse(line);
-        if (ev.type === "thread.started" && ev.thread_id) task.sessionId = ev.thread_id;
-        if (ev.type === "item.completed" && ev.item) {
-          if (ev.item.type === "agent_message") task.output = ev.item.text || task.output;
-          if (ev.item.type === "reasoning") task.reasoning.push(ev.item.text || "");
-          if (ev.item.type === "tool_call" || ev.item.type === "function_call") {
-            task.toolCalls.push({
-              type: ev.item.name || ev.item.type,
-              text: ev.item.text || JSON.stringify(ev.item.arguments || {}),
-            });
-          }
-        }
-        if (ev.type === "turn.completed" && ev.usage) {
-          task.usage = {
-            input: ev.usage.input_tokens || 0,
-            cached: ev.usage.cached_input_tokens || 0,
-            output: ev.usage.output_tokens || 0,
-          };
-        }
-      } catch {}
+      parsePiEvent(line, task);
     }
     refreshWidget();
   });
@@ -346,13 +429,9 @@ function spawnCodex(task: TaskItem, args: string[], onDone: () => void): void {
   });
 
   proc.on("close", (code) => {
+    // Process any remaining buffer
     if (buffer.trim()) {
-      try {
-        const ev = JSON.parse(buffer);
-        if (ev.type === "thread.started" && ev.thread_id) task.sessionId = ev.thread_id;
-        if (ev.type === "item.completed" && ev.item?.type === "agent_message")
-          task.output = ev.item.text || task.output;
-      } catch {}
+      parsePiEvent(buffer, task);
     }
     task.exitCode = code ?? 1;
     task.finishedAt = Date.now();
@@ -407,21 +486,24 @@ export default function (pi: ExtensionAPI) {
     name: "codex",
     label: "Codex",
     description: [
-      "Run a task with codex exec in the background. Returns immediately with a task ID.",
+      "Run a task with a background pi agent using openai-codex/gpt-5.4. Returns immediately with a task ID.",
       "Live status shown in the widget above the editor — no need to poll.",
       "You will be AUTOMATICALLY NOTIFIED when the task completes via a codex-result message — do NOT sleep, poll, or wait. Continue with other work immediately after calling this tool.",
       "Spawn multiple tasks in parallel for concurrent work — results batch into one turn.",
-      "Use session_id to resume a previous codex session with a follow-up prompt.",
+      "Use codex_tasks only when you need full output details.",
       "Defaults are approval=never and sandbox=danger-full-access unless full_auto=true.",
       "Use codex_tasks only when you need full output details.",
     ].join(" "),
     parameters: Type.Object({
       prompt: Type.String({ description: "The task/prompt to send to codex" }),
+      model: Type.Optional(Type.String({ description: "Model override (default: openai-codex/gpt-5.4)" })),
+      cwd: Type.Optional(Type.String({ description: "Working directory" })),
+      thinking: Type.Optional(Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh" })),
+      append_system_prompt: Type.Optional(Type.String({ description: "Extra context appended to the worker system prompt" })),
+      // Legacy params — accepted but ignored for backward compat
       session_id: Type.Optional(Type.String({ description: "Resume a previous codex session by thread ID" })),
-      model: Type.Optional(Type.String({ description: "Model override (e.g. o3, o4-mini)" })),
       sandbox: Type.Optional(Type.String({ description: "Sandbox mode: read-only, workspace-write, danger-full-access (default: danger-full-access)" })),
       approval_policy: Type.Optional(Type.String({ description: "Approval policy: untrusted, on-request, never (default: never)" })),
-      cwd: Type.Optional(Type.String({ description: "Working directory" })),
       full_auto: Type.Optional(Type.Boolean({ description: "Legacy --full-auto preset. Default false.", default: false })),
     }),
 
@@ -429,12 +511,14 @@ export default function (pi: ExtensionAPI) {
       const taskId = nextTaskId++;
       const taskName = generateName(params.prompt);
       const cwd = params.cwd || ctx.cwd;
+      const model = params.model || DEFAULT_MODEL;
       const task: TaskItem = {
         id: taskId,
         name: taskName,
         prompt: params.prompt,
-        sessionId: params.session_id || null,
+        sessionId: null,
         cwd,
+        model,
         status: "running",
         startedAt: Date.now(),
         finishedAt: null,
@@ -448,34 +532,15 @@ export default function (pi: ExtensionAPI) {
       };
       tasks.set(taskId, task);
 
-      const wrappedPrompt = wrapPrompt(params.prompt);
-      const useFullAuto = params.full_auto === true;
-      const effectiveSandbox = params.sandbox || DEFAULT_SANDBOX;
-      const effectiveApprovalPolicy = params.approval_policy || DEFAULT_APPROVAL_POLICY;
-      const args: string[] = [];
-      if (params.session_id) {
-        args.push("exec", "resume", params.session_id, "--json");
-      } else {
-        args.push("exec", "--json");
-      }
+      const args = buildPiArgs(task, {
+        prompt: params.prompt,
+        model: params.model,
+        cwd,
+        thinking: params.thinking,
+        append_system_prompt: params.append_system_prompt,
+      });
 
-      if (useFullAuto) {
-        args.push("--full-auto");
-        if (params.sandbox) args.push("--sandbox", params.sandbox);
-      } else {
-        // Default: no approval prompts, full access
-        args.push("--dangerously-bypass-approvals-and-sandbox");
-        if (params.sandbox && params.sandbox !== "danger-full-access") {
-          args.push("--sandbox", params.sandbox);
-        }
-      }
-
-      args.push("--skip-git-repo-check");
-      args.push("--cd", cwd);
-      if (params.model) args.push("--model", params.model);
-      args.push("--", wrappedPrompt);
-
-      spawnCodex(task, args, () => {
+      spawnPi(task, args, () => {
         const statusLabel = task.status === "done" ? "completed" : "failed";
         const preview = task.output
           ? task.output.length > 500
@@ -483,7 +548,7 @@ export default function (pi: ExtensionAPI) {
             : task.output
           : "(no output)";
         const sessionHint = task.sessionId
-          ? `\nCodex session: \`${task.sessionId}\` (use with session_id to continue)`
+          ? `\nPi session: \`${task.sessionId}\``
           : "";
         const errorHint = task.status === "error" && task.stderr ? `\nError: ${task.stderr.slice(0, 300)}` : "";
 
@@ -507,47 +572,31 @@ export default function (pi: ExtensionAPI) {
               taskName: task.name,
               sessionId: task.sessionId,
               status: task.status,
+              model: task.model,
               output: task.output,
               toolCalls: task.toolCalls,
               usage: task.usage,
-              fullAuto: useFullAuto,
-              sandbox: useFullAuto ? params.sandbox || "workspace-write" : effectiveSandbox,
-              approvalPolicy: useFullAuto ? params.approval_policy || "on-request" : effectiveApprovalPolicy,
             },
           },
           { triggerTurn: shouldTrigger, deliverAs: "followUp" },
         );
       });
 
-      const sessionInfo = params.session_id ? ` (resuming session ${shortId(params.session_id)})` : "";
-      const sandboxLabel = useFullAuto ? params.sandbox || "workspace-write" : effectiveSandbox;
-      const approvalLabel = useFullAuto ? params.approval_policy || "on-request" : effectiveApprovalPolicy;
       return {
-        content: [{ type: "text", text: `Codex task ${taskName} started${sessionInfo}. You will be notified automatically when it completes — do not poll or wait. Continue with other work.` }],
+        content: [{ type: "text", text: `Codex task ${taskName} started (model: ${model}). You will be notified automatically when it completes — do not poll or wait. Continue with other work.` }],
         details: {
           taskId,
           taskName,
-          sessionId: params.session_id || null,
-          fullAuto: useFullAuto,
-          sandbox: sandboxLabel,
-          approvalPolicy: approvalLabel,
+          model,
         },
       };
     },
 
     renderCall(args, theme) {
-      const useFullAuto = args.full_auto === true;
-      const mode = args.session_id
-        ? `resume ${shortId(args.session_id)}`
-        : useFullAuto
-          ? "exec full-auto"
-          : "exec";
-      const sandbox = args.sandbox || (useFullAuto ? "workspace-write" : DEFAULT_SANDBOX);
-      const approval = args.approval_policy || (useFullAuto ? "on-request" : DEFAULT_APPROVAL_POLICY);
-      const meta: string[] = [mode];
-      if (args.model) meta.push(args.model);
-      if (sandbox !== DEFAULT_SANDBOX) meta.push(sandbox);
-      if (approval !== DEFAULT_APPROVAL_POLICY) meta.push(`approval:${approval}`);
+      const model = args.model || DEFAULT_MODEL;
+      const meta: string[] = ["exec"];
+      if (model !== DEFAULT_MODEL) meta.push(model);
+      if (args.thinking) meta.push(`thinking:${args.thinking}`);
       let text = theme.fg("toolTitle", theme.bold("codex"));
       text += " " + theme.fg("dim", meta.join(" · "));
       const cleanPreview = sanitize(args.prompt);
@@ -557,7 +606,7 @@ export default function (pi: ExtensionAPI) {
     },
 
     renderResult(result, _options, theme) {
-      const details = result.details as { taskId: number; taskName: string; sessionId: string | null } | undefined;
+      const details = result.details as { taskId: number; taskName: string; model: string } | undefined;
       const task = details ? tasks.get(details.taskId) : undefined;
       if (!task) {
         const txt = result.content[0];
@@ -597,6 +646,7 @@ export default function (pi: ExtensionAPI) {
           };
         const lines = [
           `Task ${task.name} — ${task.status} (${elapsed(task)})`,
+          `Model: ${task.model}`,
           `Prompt: ${task.prompt}`,
           `Session: ${task.sessionId || "(none)"}`,
           `CWD: ${task.cwd}`,
@@ -620,6 +670,7 @@ export default function (pi: ExtensionAPI) {
             status: task.status,
             elapsed: elapsed(task),
             sessionId: task.sessionId,
+            model: task.model,
             prompt: task.prompt,
             output: task.output,
             toolCallCount: task.toolCalls.length,
@@ -643,6 +694,7 @@ export default function (pi: ExtensionAPI) {
           id: task.id,
           name: task.name,
           status: task.status,
+          model: task.model,
           elapsed: elapsed(task),
           sessionId: task.sessionId,
           prompt: task.prompt,
@@ -736,6 +788,7 @@ export default function (pi: ExtensionAPI) {
 
     let header = `${icon} ${theme.fg("toolTitle", theme.bold(`Codex ${details.taskName || `#${details.taskId}`}`))}`;
     const meta: string[] = [];
+    if (details.model && details.model !== DEFAULT_MODEL) meta.push(details.model);
     if (details.toolCalls?.length > 0) meta.push(`${details.toolCalls.length} tool${details.toolCalls.length === 1 ? "" : "s"}`);
     if (details.usage) meta.push(`↑${fmtTokens(details.usage.input)} ↓${fmtTokens(details.usage.output)}`);
     if (details.sessionId) meta.push(shortId(details.sessionId));
