@@ -1,7 +1,7 @@
 /**
- * ralph-loop — Autonomous coding loops via Codex background workers.
+ * ralph-loop — Autonomous coding loops via pi background workers.
  *
- * Spawns codex exec for each iteration, monitors progress via widget.
+ * Spawns pi -p --mode json for each iteration, monitors progress via widget.
  * No conversation spam — iterations update the widget silently.
  * Model gets results via hidden messages, responds once when loop completes.
  *
@@ -20,8 +20,28 @@ import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+
+// ── Pi worker configuration ────────────────────────────
+
+const EXT_DIR = import.meta.dir || __dirname;           // ralph-loop/
+const PI_TOOLS_DIR = dirname(EXT_DIR);                  // pi-tools/
+
+const WORKER_PROMPT_PATH = join(EXT_DIR, "worker-prompt.md");
+
+// Curated extensions for workers. Excludes ralph-loop itself (prevent recursion),
+// mcq (interactive), skill-shortcut (interactive), session-reader, dag-dispatch,
+// job-monitor, excalidraw, auto-update, aliases.
+const WORKER_EXTENSIONS: string[] = [
+  join(PI_TOOLS_DIR, "bash-timeout/index.ts"),
+  join(PI_TOOLS_DIR, "web-search/web-search.ts"),
+  join(PI_TOOLS_DIR, "url-to-markdown/index.ts"),
+  join(PI_TOOLS_DIR, "repo-autopsy/index.ts"),
+  join(PI_TOOLS_DIR, "agent-secrets/agent-secrets.ts"),
+  join(PI_TOOLS_DIR, "memory-enforcer/index.ts"),
+  join(PI_TOOLS_DIR, "identity-inject/index.ts"),      // joelclaw identity chain
+];
 
 // ── Types ───────────────────────────────────────────────
 
@@ -48,7 +68,7 @@ interface LoopJob {
   mode: "prd" | "prompt";
   prompt?: string;
   model: string;
-  sandbox: string;
+  thinking: string;
   iteration: number;
   maxIterations: number;
   currentStory?: { id: string; title: string };
@@ -73,18 +93,19 @@ interface IterationResult {
   summary: string;
 }
 
-interface CodexEvent {
+// Pi JSON mode event — we parse session, message_end (assistant), and agent_end
+interface PiEvent {
   type: string;
-  thread_id?: string;
-  item?: {
-    type?: string;
-    command?: string;
-    text?: string;
-    path?: string;
-    exit_code?: number | null;
+  id?: string; // session event
+  message?: {
+    role?: string;
+    content?: Array<{ type: string; name?: string; text?: string; partialJson?: string; arguments?: any }>;
+    usage?: { input?: number; output?: number; cacheRead?: number };
+    stopReason?: string;
   };
-  usage?: { input_tokens?: number; output_tokens?: number };
 }
+
+const DEFAULT_MODEL = "openai-codex/gpt-5.4";
 
 // ── State ───────────────────────────────────────────────
 
@@ -250,30 +271,44 @@ function prdStats(cwd: string): { total: number; done: number; remaining: number
   return { total: prd.stories.length, done, remaining: prd.stories.length - done, projectName: prd.projectName };
 }
 
-// ── Codex spawner ───────────────────────────────────────
+// ── Pi worker spawner ───────────────────────────────────
 
-function spawnCodexWorker(
+function buildWorkerArgs(model: string, thinking: string, prompt: string): string[] {
+  const args: string[] = [
+    "-p",                    // headless / non-interactive
+    "--mode", "json",        // JSONL output
+    "--no-session",          // ephemeral — each iteration is a fresh session
+    "--no-extensions",       // disable discovery, use explicit -e below
+    "--model", model,
+    "--thinking", thinking,
+    "--append-system-prompt", WORKER_PROMPT_PATH,
+  ];
+
+  // Load curated extensions
+  for (const ext of WORKER_EXTENSIONS) {
+    args.push("-e", ext);
+  }
+
+  // Skills: let normal pi skill discovery work (~/.pi/agent/skills/)
+  // ralph-loop's own skill injection adds targeted content via prompt prefix
+
+  args.push("--", prompt);
+  return args;
+}
+
+function spawnPiWorker(
   job: LoopJob,
   prompt: string,
   onDone: (result: IterationResult) => void,
 ) {
   const startTime = Date.now();
-  const args = [
-    "exec",
-    "--full-auto",
-    "--json",
-    "--skip-git-repo-check",
-    "-m",
-    job.model,
-    "--sandbox",
-    job.sandbox,
-    prompt,
-  ];
+  const args = buildWorkerArgs(job.model, job.thinking, prompt);
 
-  const child = spawn("codex", args, {
+  const child = spawn("pi", args, {
     cwd: job.cwd,
     env: {
       ...process.env,
+      JOELCLAW_ROLE: "codex-worker",  // identity-inject picks up codex-worker role
       PATH: `${homedir()}/.local/bin:${process.env.PATH}`,
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -281,7 +316,7 @@ function spawnCodexWorker(
 
   job.proc = child;
 
-  let stdout = "";
+  let buffer = "";
   let sessionId: string | undefined;
   let toolCalls = 0;
   let lastMessage = "";
@@ -300,18 +335,33 @@ function spawnCodexWorker(
   };
 
   child.stdout!.on("data", (chunk: Buffer) => {
-    const text = chunk.toString();
-    stdout += text;
-    for (const line of text.split("\n")) {
+    buffer += chunk.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const ev: CodexEvent = JSON.parse(line);
-        if (ev.type === "thread.started" && ev.thread_id) sessionId = ev.thread_id;
-        if (ev.type === "item.completed") {
+        const ev: PiEvent = JSON.parse(line);
+
+        // Session metadata
+        if (ev.type === "session" && ev.id) {
+          sessionId = ev.id;
+        }
+
+        // Assistant message end — extract tool calls and output text
+        if (ev.type === "message_end" && ev.message?.role === "assistant") {
           resetStall();
-          if (ev.item?.type === "command_execution") toolCalls++;
-          if (ev.item?.type === "agent_message" && ev.item.text) lastMessage = ev.item.text;
-          if (ev.item?.type === "file_change") toolCalls++;
+          if (Array.isArray(ev.message.content)) {
+            for (const item of ev.message.content) {
+              if (item.type === "toolCall") toolCalls++;
+              if (item.type === "text" && item.text) lastMessage = item.text;
+            }
+          }
+        }
+
+        // Tool result — counts as activity
+        if (ev.type === "message_end" && ev.message?.role === "toolResult") {
+          resetStall();
         }
       } catch {}
     }
@@ -322,6 +372,21 @@ function spawnCodexWorker(
 
   child.on("close", (code) => {
     clearTimeout(stallTimer);
+    // Process remaining buffer
+    if (buffer.trim()) {
+      try {
+        const ev: PiEvent = JSON.parse(buffer);
+        if (ev.type === "session" && ev.id) sessionId = ev.id;
+        if (ev.type === "message_end" && ev.message?.role === "assistant") {
+          if (Array.isArray(ev.message.content)) {
+            for (const item of ev.message.content) {
+              if (item.type === "text" && item.text) lastMessage = item.text;
+            }
+          }
+        }
+      } catch {}
+    }
+
     job.proc = null;
     const duration = Date.now() - startTime;
     const summary = lastMessage
@@ -388,7 +453,7 @@ async function runLoop(job: LoopJob, pi: ExtensionAPI) {
         prompt = prefix + job.prompt!;
       }
 
-      spawnCodexWorker(job, prompt, resolve);
+      spawnPiWorker(job, prompt, resolve);
     });
   };
 
@@ -535,10 +600,10 @@ export default function (pi: ExtensionAPI) {
     name: "ralph_loop",
     label: "Ralph Loop",
     description: [
-      "Run autonomous coding loops via Codex background workers.",
+      "Run autonomous coding loops via pi background workers (openai-codex/gpt-5.4).",
       "Two modes: (1) PRD mode — reads prd.json, picks stories by priority, implements one per iteration.",
       "(2) Prompt mode — runs a single prompt repeatedly with optional exit condition.",
-      "Each iteration spawns a fresh codex exec. Reports progress via messages.",
+      "Each iteration spawns a fresh pi agent with full tooling, identity chain, extensions, and skill access.",
       "Returns immediately with a job ID.",
       "Supports skill injection: pass skills=['frontend-design'] to prepend skill content to every prompt.",
     ].join(" "),
@@ -548,10 +613,8 @@ export default function (pi: ExtensionAPI) {
       }),
       prompt: Type.Optional(Type.String({ description: "Prompt for each iteration (prompt mode only)" })),
       max_iterations: Type.Optional(Type.Number({ description: "Max iterations (default: 10)" })),
-      model: Type.Optional(Type.String({ description: "Codex model (default: gpt-5.3-codex)" })),
-      sandbox: Type.Optional(
-        Type.String({ description: "Sandbox: read-only, workspace-write, danger-full-access (default: workspace-write)" }),
-      ),
+      model: Type.Optional(Type.String({ description: `Pi model (default: ${DEFAULT_MODEL})` })),
+      thinking: Type.Optional(Type.String({ description: "Thinking level: off, minimal, low, medium, high, xhigh (default: medium)" })),
       cwd: Type.Optional(Type.String({ description: "Working directory" })),
       skills: Type.Optional(Type.Array(Type.String(), { description: "Skill names to inject into prompts (reads ~/.pi/agent/skills/{name}/SKILL.md)" })),
       context: Type.Optional(Type.String({ description: "Free-form context prepended to every prompt (e.g. 'brutalist dark theme, monospace')" })),
@@ -564,8 +627,8 @@ export default function (pi: ExtensionAPI) {
         cwd: params.cwd || ctx.cwd,
         mode: params.mode,
         prompt: params.prompt,
-        model: params.model || "gpt-5.3-codex",
-        sandbox: params.sandbox || "workspace-write",
+        model: params.model || DEFAULT_MODEL,
+        thinking: params.thinking || "medium",
         iteration: 0,
         maxIterations: params.max_iterations || 10,
         results: [],
@@ -616,7 +679,7 @@ export default function (pi: ExtensionAPI) {
           jobId: job.id,
           mode: job.mode,
           model: job.model,
-          sandbox: job.sandbox,
+          thinking: job.thinking,
           maxIterations: job.maxIterations,
           skills: job.skills,
           context: job.context,
@@ -627,8 +690,8 @@ export default function (pi: ExtensionAPI) {
 
     renderCall(args, theme) {
       const meta: string[] = [args.mode];
-      if (args.model && args.model !== "gpt-5.3-codex") meta.push(args.model);
-      if (args.sandbox && args.sandbox !== "workspace-write") meta.push(args.sandbox);
+      if (args.model && args.model !== DEFAULT_MODEL) meta.push(args.model);
+      if (args.thinking && args.thinking !== "medium") meta.push(`thinking:${args.thinking}`);
       if (args.max_iterations) meta.push(`max ${args.max_iterations}`);
       if (args.skills?.length) meta.push(`+${args.skills.join(",")}`);
 
