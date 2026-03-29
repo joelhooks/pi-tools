@@ -42,7 +42,5 @@ if ! check secrets; then
   curl -fsSL https://raw.githubusercontent.com/joelhooks/agent-secrets/main/install.sh | bash
 fi
 
-check codex || echo "  ⚠️  codex not found — install from https://github.com/openai/codex"
-
 echo ""
 echo "✅ Done. Run: pi install git:github.com/joelhooks/pi-tools"

@@ -39,7 +39,7 @@ class SkillShortcutAutocomplete implements AutocompleteProvider {
     private skillCommands: { name: string; description?: string }[]
   ) {}
 
-  getSuggestions(lines: string[], cursorLine: number, cursorCol: number) {
+  getSuggestions(lines: string[], cursorLine: number, cursorCol: number, options?: any) {
     const textBeforeCursor = (lines[cursorLine] || "").slice(0, cursorCol);
     const dollarPrefix = extractDollarPrefix(textBeforeCursor);
 
@@ -57,7 +57,7 @@ class SkillShortcutAutocomplete implements AutocompleteProvider {
       return filtered.length ? { items: filtered, prefix: dollarPrefix } : null;
     }
 
-    return this.inner.getSuggestions(lines, cursorLine, cursorCol);
+    return this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
   }
 
   applyCompletion(

@@ -8,7 +8,7 @@
 
 # pi-tools
 
-> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Farm work out to Codex in background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
+> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Run autonomous background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
 
 ## Install
 
@@ -26,8 +26,7 @@ pi config  # enable/disable individual extensions
 | Extension | What |
 |-----------|------|
 | `repo-autopsy` 🔬 | Clone GitHub repos and analyze them — ripgrep, ast-grep, deps, hotspots, blame, tokei stats |
-| `codex-exec` 🚀 | Run codex tasks in the background with async result reporting (default: `--ask-for-approval never` + `--sandbox danger-full-access`; `full_auto` is opt-in legacy mode) |
-| `ralph-loop` 🔁 | Autonomous coding loops via Codex — PRD-driven stories or free-form prompt loops with progress reporting |
+| `ralph-loop` 🔁 | Autonomous coding loops via pi background workers — PRD-driven stories or free-form prompt loops with progress reporting |
 | `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
 | `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |
 | `session-reader` 📖 | Discover and parse sessions from pi, Claude Code, and Codex |
@@ -38,13 +37,13 @@ pi config  # enable/disable individual extensions
 
 Two modes:
 
-**PRD mode** — reads `prd.json` in the working directory, picks stories by priority, spawns codex to implement each one. Marks stories as done when they pass. Reports each iteration back to pi.
+**PRD mode** — reads `prd.json` in the working directory, picks stories by priority, spawns background pi workers to implement each one. Marks stories as done when they pass. Reports each iteration back to pi.
 
 ```
 Use ralph_loop in prd mode to implement the stories in this project
 ```
 
-**Prompt mode** — runs a prompt repeatedly up to N iterations. Each iteration is a fresh codex session.
+**Prompt mode** — runs a prompt repeatedly up to N iterations. Each iteration is a fresh worker session.
 
 ```
 Use ralph_loop in prompt mode with "Run the tests and fix any failures" for 5 iterations
