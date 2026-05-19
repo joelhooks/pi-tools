@@ -32,6 +32,19 @@ pi config  # enable/disable individual extensions
 | `session-reader` 📖 | Discover and parse sessions from pi, Claude Code, and Codex |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
+| `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
+
+## linear-tracker
+
+Project-local issue tracker resolver for agents that want to publish PRDs/issues. Linear is only allowed when local policy says Linear, a team association exists, and auth is available. Global MCP/auth is capability, not routing.
+
+Tools:
+- `linear_tracker_resolve` — reads nearest project policy and returns `linear_direct`, `linear_mcp`, `payload_only`, `not_linear`, or `unknown`
+- `linear_tracker_create_issue` — creates one Linear issue via direct API auth and verifies readback
+- `linear_tracker_create_issues` — creates dependency-ordered issue batches and verifies each created issue
+- `linear_tracker_get_issue` — fetches an issue for readback verification
+
+Policy lives in `AGENTS.md`, `CLAUDE.md`, `docs/agents/issue-tracker.md`, or `.pi/settings.json`.
 
 ## ralph-loop
 
