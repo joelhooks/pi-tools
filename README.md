@@ -48,7 +48,7 @@ Policy lives in `AGENTS.md`, `CLAUDE.md`, `docs/agents/issue-tracker.md`, or `.p
 
 ## session-reader
 
-`session-reader` is now a thin compatibility wrapper. Session recovery is owned by `joelclaw session`, and this extension only presents Pi tool shortcuts for `search --extract`, `extract`, `inspect`, and `chunks`.
+`session-reader` is now a thin compatibility wrapper. Session recovery is owned by `joelclaw session`, and this extension only presents Pi tool shortcuts for `search --extract`, `extract`, `inspect`, and `chunks`. Delete this extension later if prompt/system guidance is enough.
 
 Deprecated behavior removed:
 

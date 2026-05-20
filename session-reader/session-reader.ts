@@ -3,6 +3,7 @@
  *
  * Session recovery is owned by `joelclaw session`. This extension only presents
  * thin Pi tool shortcuts and must not grow its own retrieval brain.
+ * Delete this extension later if prompt/system guidance is enough.
  *
  * Tools:
  *   sessions: wrapper for `joelclaw session search ... --extract`
