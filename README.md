@@ -29,7 +29,7 @@ pi config  # enable/disable individual extensions
 | `ralph-loop` 🔁 | Autonomous coding loops via pi background workers — PRD-driven stories or free-form prompt loops with progress reporting |
 | `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
 | `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |
-| `session-reader` 📖 | Discover and parse sessions from pi, Claude Code, and Codex |
+| `session-reader` 📖 | Deprecated compatibility shortcuts for `joelclaw session` recovery. `joelclaw session` owns search, extraction, inspect, and chunks |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
 | `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
@@ -45,6 +45,25 @@ Tools:
 - `linear_tracker_get_issue` — fetches an issue for readback verification
 
 Policy lives in `AGENTS.md`, `CLAUDE.md`, `docs/agents/issue-tracker.md`, or `.pi/settings.json`.
+
+## session-reader
+
+`session-reader` is now a thin compatibility wrapper. Session recovery is owned by `joelclaw session`, and this extension only presents Pi tool shortcuts for `search --extract`, `extract`, `inspect`, and `chunks`.
+
+Deprecated behavior removed:
+
+- no direct raw JSONL parsing
+- no local Typesense probing
+- no background reader-agent spawning
+
+Use the CLI directly when possible:
+
+```bash
+joelclaw session search "<query>" --source both --machine "$(hostname -s)" --limit 5 --extract
+joelclaw session extract <session-id-or-path> --query "<topic>" --format markdown
+joelclaw session inspect <session-id-or-path> --around "<regex>" --before 20 --after 80
+joelclaw session chunks "<query>" --source local --machine "$(hostname -s)" --limit 20
+```
 
 ## ralph-loop
 
