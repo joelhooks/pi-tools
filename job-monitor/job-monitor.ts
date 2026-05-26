@@ -8,8 +8,8 @@
  * Jobs appear when dispatched, update on state changes, fade after completion.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text, truncateToWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 type JobStatus = "running" | "completed" | "failed" | "dispatched";
 

@@ -1,0 +1,9 @@
+{
+  "type": "github-repo-source",
+  "owner": "earendil-works",
+  "repo": "pi-mono",
+  "remote": "https://github.com/earendil-works/pi-mono.git",
+  "commit": "7c2775f6f67c38ed491a1ff68240ee4f8ba688da",
+  "addedAt": "2026-05-26T00:00:00.000Z",
+  "note": "Current Pi SDK source mirror for pi-tools quality audits."
+}

@@ -1,0 +1,131 @@
+---
+title: Codex Session Capture Plugin Strategy
+kind: Resource
+status: implementing
+updated: 2026-05-26
+---
+
+# Codex Session Capture Plugin Strategy
+
+## Problem
+
+Codex transcript files exist locally under `~/.codex/sessions/**`, and a Stop hook currently posts transcript deltas to JoelClaw Central. However `joelclaw session search` does not reliably return Codex sessions from this machine. Search falls back to Pi-local transcript roots, so Codex captures are effectively invisible to the session-search workflow.
+
+## Receipts
+
+- Codex hooks config: `/Users/joel/.codex/hooks.json`
+  - `Stop` hook runs `JOELCLAW_CENTRAL_URL=http://panda:3000 /opt/homebrew/bin/node /Users/joel/.local/bin/joelclaw-capture-codex-session.js`
+- Codex capture script: `/Users/joel/.local/bin/joelclaw-capture-codex-session.js`
+  - reads Codex hook stdin: `session_id`, `transcript_path`, `cwd`, `model`, `turn_id`
+  - posts delta to `${JOELCLAW_CENTRAL_URL}/api/runs`
+  - writes `~/.joelclaw/codex-session-state.json`
+  - writes `~/.joelclaw/codex-capture.log`
+  - outboxes failed POST bodies to `~/.joelclaw/outbox/`
+- Claude config: `/Users/joel/.claude/settings.json`
+  - `Stop` hook runs `/Users/joel/.bun/bin/joelclaw-capture-session`
+  - configured `JOELCLAW_CENTRAL_URL=http://panda.tail7af24.ts.net:3000`
+- Codex plugin examples:
+  - plugin manifest path shape: `.codex-plugin/plugin.json`
+  - local marketplace config uses `[plugins."name@local-user-plugins"] enabled = true`
+  - installed plugin cache lives under `~/.codex/plugins/cache/local-user-plugins/...`
+
+## Current gap
+
+The Stop hook captures deltas to Central/outbox/state, but session discovery/search does not consume Codex local transcript roots or Central captured `agent_runtime=codex` runs. A plugin alone will not fix search unless it also gives Codex/JoelClaw an installable capture + verification surface and/or updates JoelClaw search indexing.
+
+Latest receipt: `node joelclaw-session-capture/scripts/doctor-codex-session-capture.js` passes hook/state/Central checks but fails the search check because `joelclaw session search --source local` returns only Pi paths for the known Codex session id. That is the exact bug to patch in JoelClaw CLI local search.
+
+## Recommended shape
+
+Build a local Codex plugin named `joelclaw-session-capture` with:
+
+1. `.codex-plugin/plugin.json`
+   - description tells Codex/Joel to use it for session capture verification and recovery.
+   - bundled skill/docs explain the capture lifecycle.
+2. `scripts/capture-codex-session.js`
+   - promote the current `~/.local/bin/joelclaw-capture-codex-session.js` into versioned source.
+   - keep Stop-hook-safe behavior: exit 0, valid JSON, no secrets printed, outbox on failure.
+   - use `http://panda.tail7af24.ts.net:3000` instead of ambiguous `http://panda:3000` unless local DNS is guaranteed.
+3. `scripts/doctor-codex-session-capture.js`
+   - checks hook is installed in `~/.codex/hooks.json`.
+   - checks latest transcript path exists.
+   - checks state/log mtime.
+   - checks outbox count.
+   - runs a Central/query/search verification when auth/backplane is available.
+4. Installer command/script
+   - idempotently patches `~/.codex/hooks.json` Stop hooks.
+   - preserves existing cmux hooks.
+   - registers/enables `[plugins."joelclaw-session-capture@local-user-plugins"]` in `~/.codex/config.toml` or local marketplace.
+5. JoelClaw search fix
+   - update `joelclaw session search --source local` to include `~/.codex/sessions/**/*.jsonl`, not just Pi sessions.
+   - alternatively add `--agent codex|pi|claude|all` and include Codex roots in raw local search.
+
+## Implementation receipts
+
+Created local plugin scaffold in this repo:
+
+```txt
+joelclaw-session-capture/
+  .codex-plugin/plugin.json
+  README.md
+  skills/session-capture/SKILL.md
+  scripts/capture-codex-session.js
+  scripts/doctor-codex-session-capture.js
+  scripts/install-hook.js
+```
+
+Changes made:
+
+- Promoted `/Users/joel/.local/bin/joelclaw-capture-codex-session.js` into `joelclaw-session-capture/scripts/capture-codex-session.js`.
+- Changed the versioned script default Central URL to `http://panda.tail7af24.ts.net:3000`.
+- Ran `JOELCLAW_CENTRAL_URL=http://panda.tail7af24.ts.net:3000 node joelclaw-session-capture/scripts/install-hook.js`, which updated `/Users/joel/.codex/hooks.json` while preserving cmux hooks.
+- Doctor check with stable Central URL:
+  - hook exists: pass
+  - cmux preserved: pass
+  - stable panda URL: pass
+  - latest Codex transcript exists: pass
+  - Codex state/log present: pass, but stale by ~10h because no newer Codex Stop event has fired
+  - outbox count: 0
+  - Central reachable: pass, `OPTIONS /api/runs` returned 204
+  - local JoelClaw search returns Codex path: fail; returned only Pi paths for `019e616b-d7ea-7e33-8004-1e47ac0424b0`
+
+## JoelClaw CLI search fix receipt
+
+Patched on `ssh joel@panda` in `/Users/joel/Code/joelhooks/joelclaw` and pushed to `origin/main`:
+
+- Commit: `8c12b717 fix: search raw Claude and Codex session transcripts`
+- Rebased panda `main` onto `origin/main`, then pushed `514be296..8c12b717`.
+- Rebuilt and installed `~/.bun/bin/joelclaw` on panda.
+- Copied the rebuilt binary from panda to local `~/.bun/bin/joelclaw`, after making a timestamped local backup.
+
+Behavior now:
+
+```bash
+joelclaw session search "019e616b-d7ea-7e33-8004-1e47ac0424b0" \
+  --source local \
+  --machine "$(hostname -s)" \
+  --runtime codex \
+  --limit 5 \
+  --extract
+```
+
+Returns:
+
+```txt
+/Users/joel/.codex/sessions/2026/05/25/rollout-2026-05-25T16-15-18-019e616b-d7ea-7e33-8004-1e47ac0424b0.jsonl
+```
+
+Additional verification:
+
+```bash
+joelclaw session extract "019e616b-d7ea-7e33-8004-1e47ac0424b0" --query "pi-notes" --format json
+```
+
+Resolved the Codex path and extracted 570 transcript lines.
+
+## Acceptance checks
+
+- Start/stop a Codex session and see a new `captured run=... runtime:codex` line in `~/.joelclaw/codex-capture.log`.
+- `~/.joelclaw/codex-session-state.json` advances byte offset for that transcript.
+- `joelclaw session search "<unique codex phrase>" --source local --machine "$(hostname -s)" --limit 5 --extract` returns the Codex transcript path, not only Pi sessions that mention it.
+- `session_capture_status` reports Codex capture present and fresh.

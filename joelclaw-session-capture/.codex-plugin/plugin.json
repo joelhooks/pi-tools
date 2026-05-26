@@ -1,0 +1,19 @@
+{
+  "name": "joelclaw-session-capture",
+  "version": "0.1.0",
+  "description": "Capture Codex Stop-hook transcript deltas into JoelClaw /api/runs.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "JOELCLAW_CENTRAL_URL=http://panda.tail7af24.ts.net:3000 /opt/homebrew/bin/node ./scripts/capture-codex-session.js",
+            "timeout": 5000,
+            "statusMessage": "Capturing Codex run"
+          }
+        ]
+      }
+    ]
+  }
+}

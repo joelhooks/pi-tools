@@ -1,8 +1,8 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 
 const AUTOPSY_DIR = join(homedir(), ".repo-autopsy");
@@ -88,6 +88,49 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }], details: {} };
 }
 
+function copyRepoSourceToProject(
+  repoResult: { path: string; owner: string; repo: string },
+  projectCwd: string,
+  options: { refresh?: boolean; prefix?: string } = {},
+): { sourcePath: string; metadataPath: string } | string {
+  const sourceRoot = resolve(projectCwd, options.prefix ?? ".agent_sources");
+  const sourcePath = join(sourceRoot, "github.com", repoResult.owner, repoResult.repo);
+
+  if (existsSync(sourcePath)) {
+    if (!options.refresh) {
+      return `Source already exists at ${sourcePath}. Pass refresh:true to replace it.`;
+    }
+    rmSync(sourcePath, { recursive: true, force: true });
+  }
+
+  mkdirSync(sourcePath, { recursive: true });
+  cpSync(repoResult.path, sourcePath, {
+    recursive: true,
+    filter: (src) => !src.includes(`${repoResult.path}/.git`) && !src.includes(`${repoResult.path}/node_modules`),
+  });
+
+  const commit = sh(`git rev-parse HEAD`, repoResult.path);
+  const metadataPath = join(sourcePath, ".agent-source.json");
+  writeFileSync(
+    metadataPath,
+    `${JSON.stringify(
+      {
+        type: "github-repo-source",
+        owner: repoResult.owner,
+        repo: repoResult.repo,
+        remote: `https://github.com/${repoResult.owner}/${repoResult.repo}.git`,
+        commit,
+        addedAt: new Date().toISOString(),
+        note: "Project-local agent source mirror. Refresh with repo_add_source.",
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  return { sourcePath, metadataPath };
+}
+
 export default function (pi: ExtensionAPI) {
   // Clone / update a repo
   pi.registerTool({
@@ -104,7 +147,33 @@ export default function (pi: ExtensionAPI) {
       const status = result.cached ? "📦 cached" : "🔄 fetched";
       const fileCount = sh(`find ${result.path} -type f -not -path '*/.git/*' | wc -l`);
       const langs = sh(`find ${result.path} -type f -not -path '*/.git/*' | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -10`);
-      return text(`✓ ${result.owner}/${result.repo} ready at: ${result.path} (${status})\n\nFiles: ${fileCount}\n\nTop extensions:\n${langs}\n\nUse repo_structure, repo_search, repo_deps, repo_hotspots, repo_file, repo_ast, repo_blame, repo_stats, repo_exports, repo_find`);
+      return text(`✓ ${result.owner}/${result.repo} ready at: ${result.path} (${status})\n\nFiles: ${fileCount}\n\nTop extensions:\n${langs}\n\nUse repo_structure, repo_search, repo_deps, repo_hotspots, repo_file, repo_ast, repo_blame, repo_stats, repo_exports, repo_find, repo_add_source`);
+    },
+  });
+
+  pi.registerTool({
+    name: "repo_add_source",
+    label: "Repo: Add Agent Source",
+    description: "Add a shallow project-local mirror of a GitHub repo under .agent_sources for active dependency/source inspection.",
+    parameters: Type.Object({
+      repo: Type.String({ description: "GitHub repo (owner/repo or full URL)" }),
+      cwd: Type.Optional(Type.String({ description: "Project directory. Defaults to the current pi process cwd." })),
+      prefix: Type.Optional(Type.String({ description: "Source directory prefix (default: .agent_sources)" })),
+      refresh: Type.Optional(Type.Boolean({ description: "Replace an existing source mirror" })),
+    }),
+    async execute(_id, params) {
+      const result = ensureRepo(params.repo, params.refresh);
+      if (typeof result === "string") return text(result);
+
+      const copied = copyRepoSourceToProject(result, params.cwd ?? process.cwd(), {
+        prefix: params.prefix,
+        refresh: params.refresh,
+      });
+      if (typeof copied === "string") return text(copied);
+
+      return text(
+        `✓ Added ${result.owner}/${result.repo} as project agent source\n\nSource: ${copied.sourcePath}\nMetadata: ${copied.metadataPath}\n\nThis is a shallow source mirror for agent inspection, not a package install.`,
+      );
     },
   });
 

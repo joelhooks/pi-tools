@@ -11,3 +11,9 @@ This is Joel's default planning law across active projects.
 - For clarification, Grill Me, PRD interviews, and planning questions, use inline voice-friendly prose. Ask one question at a time with a recommended answer and why. Do not use interactive MCQ unless Joel explicitly asks for it.
 - If a project lacks `.brain/`, create the minimal PARA scaffold when the first durable PRD/plan/decision appears.
 <!-- brain-first-workflow:end -->
+
+<!-- session-search:start -->
+# Session search
+
+When asked to search, recover, inspect, continue, or summarize prior Pi/Claude/Codex sessions, use the `session-search` skill. Default to `session_search`: joelclaw pointers first, then local transcript files for receipts. Use `session_capture_status` before claiming this machine is syncing sessions to JoelClaw.
+<!-- session-search:end -->

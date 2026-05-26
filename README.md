@@ -25,14 +25,21 @@ pi config  # enable/disable individual extensions
 
 | Extension | What |
 |-----------|------|
-| `repo-autopsy` 🔬 | Clone GitHub repos and analyze them — ripgrep, ast-grep, deps, hotspots, blame, tokei stats |
-| `ralph-loop` 🔁 | Autonomous coding loops via pi background workers — PRD-driven stories or free-form prompt loops with progress reporting |
-| `agent-secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
+| `repo-autopsy` 🔬 | Clone GitHub repos, analyze them, and add active dependency source mirrors under `.agent_sources/` |
+| `secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
 | `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |
-| `session-reader` 📖 | Deprecated compatibility shortcuts for `joelclaw session` recovery. `joelclaw session` owns search, extraction, inspect, and chunks |
+| `session-reader` 📖 | Pi/Claude/Codex session recovery: joelclaw pointers first, local transcript receipts second |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
 | `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
+
+## repo-autopsy
+
+Repo analysis tools clone into `~/.repo-autopsy` for cacheable inspection. `repo_add_source` additionally copies a repo into the current project under `.agent_sources/github.com/<owner>/<repo>` with `.agent-source.json` metadata, so agents can inspect active dependency source alongside project code.
+
+Tools: `repo_clone`, `repo_structure`, `repo_search`, `repo_ast`, `repo_deps`, `repo_hotspots`, `repo_file`, `repo_blame`, `repo_stats`, `repo_exports`, `repo_find`, `repo_cleanup`, `repo_add_source`
+
+This repo keeps the current Pi source mirrored at `.agent_sources/github.com/earendil-works/pi-mono` for SDK receipts.
 
 ## linear-tracker
 
@@ -48,13 +55,21 @@ Policy lives in `AGENTS.md`, `CLAUDE.md`, `docs/agents/issue-tracker.md`, or `.p
 
 ## session-reader
 
-`session-reader` is now a thin compatibility wrapper. Session recovery is owned by `joelclaw session`, and this extension only presents Pi tool shortcuts for `search --extract`, `extract`, `inspect`, and `chunks`. Delete this extension later if prompt/system guidance is enough.
+`session-reader` is Pi-first session recovery. It asks `joelclaw session` for cross-machine/index pointers, then digs into local Pi/Claude/Codex JSONL transcripts for details when available. `joelclaw` is the backplane and backup; local transcript files are still the source of truth.
 
-Deprecated behavior removed:
+Use `/skill:session-search` for the operating workflow.
 
-- no direct raw JSONL parsing
-- no local Typesense probing
-- no background reader-agent spawning
+Primary tools:
+
+- `session_search` — search joelclaw pointers, then local transcript details
+- `session_capture_status` — verify Pi/Claude/Codex capture state on this machine
+- `session_context` — bounded extraction for a session id or transcript path
+- `session_inspect` — deterministic line inspection around a regex
+- `session_chunks` — compact chunk search with safety caps
+
+Still removed:
+
+- background reader-agent spawning
 
 Use the CLI directly when possible:
 
@@ -62,26 +77,17 @@ Use the CLI directly when possible:
 joelclaw session search "<query>" --source both --machine "$(hostname -s)" --limit 5 --extract
 joelclaw session extract <session-id-or-path> --query "<topic>" --format markdown
 joelclaw session inspect <session-id-or-path> --around "<regex>" --before 20 --after 80
-joelclaw session chunks "<query>" --source local --machine "$(hostname -s)" --limit 20
+joelclaw session chunks "<query>" --source local --machine "$(hostname -s)" --limit 5 --context-before 0 --context-after 0
 ```
 
-## ralph-loop
+Pi `session_chunks` wrapper safety defaults:
 
-Two modes:
+- defaults to `limit: 5`, `context_before: 0`, `context_after: 0`
+- caps requests at `limit: 10` and context `2` unless `allow_large_output: true`
+- returns compact markdown by default; raw JSON requires `compact: false` plus `allow_large_output: true`
+- excludes current-session matches by default when Pi exposes the current session id/file; pass `exclude_current: false` to include them intentionally
 
-**PRD mode** — reads `prd.json` in the working directory, picks stories by priority, spawns background pi workers to implement each one. Marks stories as done when they pass. Reports each iteration back to pi.
-
-```
-Use ralph_loop in prd mode to implement the stories in this project
-```
-
-**Prompt mode** — runs a prompt repeatedly up to N iterations. Each iteration is a fresh worker session.
-
-```
-Use ralph_loop in prompt mode with "Run the tests and fix any failures" for 5 iterations
-```
-
-Progress appears as messages in your pi session. Use `ralph_jobs` to check status or cancel.
+Use direct `joelclaw session chunks` only when you really want the raw CLI behavior.
 
 ## mcp-bridge
 
@@ -115,7 +121,7 @@ On session start, auto-connects to all servers with saved tokens. If tokens are 
 
 Requires `@modelcontextprotocol/sdk` (installed by `setup.sh`).
 
-## agent-secrets
+## secrets
 
 Lease credentials safely with TTLs. No env files committed, no plaintext on disk.
 

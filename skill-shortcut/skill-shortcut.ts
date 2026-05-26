@@ -1,11 +1,11 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { CustomEditor } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import {
   type AutocompleteItem,
   type AutocompleteProvider,
   fuzzyFilter,
   matchesKey,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 /**
  * Extension: `$` as a shortcut prefix for skills.

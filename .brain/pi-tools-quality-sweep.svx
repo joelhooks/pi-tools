@@ -1,0 +1,58 @@
+---
+title: Pi Tools Quality Sweep
+kind: Project
+status: active
+updated: 2026-05-26
+---
+
+# Pi Tools Quality Sweep
+
+## Intent
+
+Sweep `pi-tools` against current Pi SDK/package behavior and tighten the extension set.
+
+## Requested direction
+
+- Add repo-autopsy support for adding an inspected repo as a shallow project-local source under `.agent_sources/` when it is an active dependency.
+- Ensure the Pi repo itself is available in this repo under `.agent_sources/` for SDK/source receipts.
+- Restore `session-reader` as useful first-party session tooling, with `joelclaw session` as backup instead of the only path.
+- Delete `ralph-loop` from this repo.
+- Rename `agent-secrets` extension/tool surface to `secrets`.
+- Delete `auto-update` from this repo.
+- Reassess `linear-tracker`; likely broken or misplaced and should probably become its own tool repo.
+- Sweep every remaining extension for quality/capability fit against current Pi SDK.
+
+## Initial receipts
+
+- Current installed Pi package inspected at `/Users/joel/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/package.json`.
+- Current Pi package version: `@earendil-works/pi-coding-agent@0.74.1`.
+- Pi source repository from package metadata: `https://github.com/earendil-works/pi-mono.git`, package directory `packages/coding-agent`.
+- `pi-tools/package.json` still declares old peer package names `@mariozechner/* ~0.61.0`, while current Pi provides `@earendil-works/* 0.74.1` and compatibility aliases.
+- Current declared extensions in `package.json`: `repo-autopsy`, `session-reader`, `skill-shortcut`, `ralph-loop`, `aliases`, `mcq`, `agent-secrets`, `mcp-bridge`, `auto-update`, `web-search`, `url-to-markdown`, `bash-timeout`, `excalidraw`, `linear-tracker`.
+- Extra non-installed extension-like directories exist: `dag-dispatch`, `memory-enforcer`.
+
+## Proposed execution order
+
+1. Add `.agent_sources/` conventions and Pi source mirror/subtree first, so later SDK claims have receipts.
+2. Update `repo-autopsy` with safe source-add tooling and shell escaping.
+3. Prune/rename extension manifest entries: remove `ralph-loop`, remove `auto-update`, rename `agent-secrets` surface to `secrets` with compatibility if needed.
+4. Restore `session-reader` primary behavior while keeping `joelclaw` fallback.
+5. Audit `linear-tracker` and decide: keep temporarily, disable, or extract to separate repo.
+6. Run type/build checks and a fresh extension-load smoke test.
+
+## Open decisions
+
+- Exact `.agent_sources/` layout: prefer `.agent_sources/github.com/<owner>/<repo>` for unambiguous provenance.
+- Whether `agent-secrets` should keep old `secrets_*` tool names only, or also rename source directory/package label to `secrets`.
+- Whether `linear-tracker` extraction happens in this repo now or as a follow-up repo split.
+
+## Session-reader direction update
+
+- New intended flow: `session_search` checks `joelclaw session search` first for cross-machine/index pointers, then searches local Pi/Claude/Codex JSONL transcripts for concrete details and file paths.
+- Added `session_capture_status` as the machine verification surface for local capture state.
+- Machine verification receipts from 2026-05-26:
+  - Pi local transcripts exist (`~/.pi/agent/sessions`, 4507 JSONL files) and `~/.joelclaw/capture.log` is actively updating.
+  - Codex local transcripts exist (`~/.codex/sessions`, 173 JSONL files) and `~/.joelclaw/codex-session-state.json` includes the latest checked Codex transcript.
+  - Claude local transcripts exist (`~/.claude/projects`, 1015 JSONL files), but no `~/.joelclaw/claude-session-state.json` or `~/.joelclaw/claude-capture.log` exists on this machine. Claude capture is not verified and likely missing.
+  - `joelclaw status` currently reports server/worker unreachable, while local `joelclaw session search --source local` works.
+
