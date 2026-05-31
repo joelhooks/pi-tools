@@ -32,6 +32,7 @@ pi config  # enable/disable individual extensions
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
 | `aliases` 🚪 | `/quit` and `/q` → `/exit` |
 | `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
+| `shortlink-qr` 🔗 | Create joel.dev shortlinks, generate HiDPI QR PNG/SVG assets, push via ShitRat, and record local Brain resources |
 
 ## repo-autopsy
 
@@ -120,6 +121,36 @@ Bridge metadata is stored in `~/.pi/mcp-bridge/` (OAuth client registrations, ca
 On session start, auto-connects to all servers with saved tokens. If tokens are expired or invalid, the bridge clears stale credentials and shows a status warning — run `/mcp-login <name>` to re-auth.
 
 Requires `@modelcontextprotocol/sdk` (installed by `setup.sh`).
+
+## shortlink-qr
+
+Create stage/demo shortlinks with QR assets and a local Brain resource entry.
+
+```ts
+shortlink_qr({
+  slug: "cascadia-viv",
+  url: "https://x.com/Vtrivedy10/status/2031408954517971368",
+  title: "Viv harness engineering article",
+  push: true,
+  background: "transparent"
+})
+```
+
+Outputs:
+
+- friendly `https://joel.dev/<slug>` shortlink
+- native 1500×1500 QR PNG and SVG under `resources/qr/`
+- PNG copied to the macOS clipboard
+- optional ShitRat commit to `joelhooks/joel-dev-link-shortener`
+- `.brain/resources/shortlinks.svx` resource-list entry with a pi-notes/portless URL when available
+
+Backgrounds: `transparent` (default), `white`, or `black` (white QR code on black).
+
+Command shortcut:
+
+```bash
+/shortlink-qr cascadia-viv https://example.com
+```
 
 ## secrets
 
