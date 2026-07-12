@@ -1,0 +1,16 @@
+---
+title: "Task: Build the herdr lifecycle bridge"
+type: "wayfinder_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Build the herdr lifecycle bridge
+
+You are resolving `.brain/projects/wayfinder/build-lifecycle-bridge.svx` (in pi-tools; read it + the map `.brain/projects/wayfinder/herdr-pings-map.svx` Notes). Code lives in `~/Code/joelhooks/herdr-pings` — the repo you just created.
+
+Execute the ticket. Constraints beyond it:
+
+- **You own `bridge/` only.** Do NOT create or edit `herdr-plugin.toml` (another worker is building actions in parallel; the steering session assembles the manifest). Instead write `bridge/manifest-snippet.toml` containing the exact `[[events]]` entries plus the plugin header fields you'd propose (`id = "herdr-pings"`, name, version, min_herdr_version, platforms).
+- Bridge command: a Bun/Node script in `bridge/` reading `HERDR_PLUGIN_EVENT` + `HERDR_PLUGIN_EVENT_JSON` (callsign precedent at `~/Code/joelhooks/herdr-callsign/sync-title.js:258-268`), appending per the spool contract in the README. Reuse the filename encoding (`:` → `-`). Single O_APPEND write, tolerate missing spool dir (`mkdir -p`), never crash loudly — log to stderr (herdr captures plugin logs).
+- Resolve the `pane.exited` vs `pane.closed` payload distinction empirically: `herdr api schema` output + a linked-plugin experiment if needed (you may `herdr plugin link` a THROWAWAY manifest in /tmp to observe payloads — never link the real repo mid-build). Record findings in `bridge/README.md`.
+- Do NOT commit. Print `DONE: <gist + exited/closed semantics>` when finished.

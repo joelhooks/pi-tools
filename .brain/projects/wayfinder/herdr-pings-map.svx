@@ -29,6 +29,7 @@ The wake loop lives in its own **public** repo `joelhooks/herdr-pings`, installa
 ## Decisions so far
 
 - Repo name and visibility — Joel chose `herdr-pings`, public (matches the spool dir `~/.local/state/herdr-pings`).
+- [Create the herdr-pings repo and extract the wake loop](./create-herdr-pings-repo.svx) — live at https://github.com/joelhooks/herdr-pings, symlinks re-pointed, pi-tools cleaned (`2041ace`), post-move smoke green.
 
 ## Not yet specified
 

@@ -9,6 +9,8 @@ parent: "./herdr-pings-map.svx"
 blockers:
   - "./create-herdr-pings-repo.svx"
 created_at: "2026-07-12"
+assignee: "pi-worker wF:p6 (steered by claude wF:p1)"
+claimed_at: "2026-07-12"
 ---
 
 # Build the herdr lifecycle bridge into the spool

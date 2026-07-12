@@ -1,7 +1,7 @@
 ---
 title: "Create the herdr-pings repo and extract the wake loop into it"
 type: "wayfinder_ticket"
-status: "open"
+status: "closed"
 labels:
   - "wayfinder:task"
 interaction: "AFK"
@@ -26,3 +26,13 @@ Stand up public repo `joelhooks/herdr-pings` and move the wake loop there cleanl
 - Smoke after re-pointing: `HERDR_PANE_ID='wT:p9' pi -p "say hi"` appends to the spool; `herdr-ping-wait --timeout 3` behaves (exit 2, nothing new consumed unexpectedly).
 
 Resolution: repo URL, the pi-tools removal commit, symlink receipts, and smoke output.
+
+## Resolution (2026-07-12)
+
+Done by pi worker `wF:p6`, verified by the steering session.
+
+- Public repo live: https://github.com/joelhooks/herdr-pings (`39c074d`; MIT; README carries the spool contract + install one-liners, zero operator-private content — steering fixed one wrong upstream link post-review).
+- pi-tools removal + pointer commit: `2041ace`, pushed. Both dirs gone from pi-tools.
+- Live symlinks verified re-pointed: `~/.pi/agent/extensions/herdr-turn-ping` and `~/.local/bin/herdr-ping-wait` → `~/Code/joelhooks/herdr-pings/...`.
+- herdr-orchestration skill and the standalone-repo memory updated to the new paths.
+- Post-move smoke passed: one `turn_ended` appended by a fresh pi run; `herdr-ping-wait --timeout 3` exit 2 with nothing consumed.
