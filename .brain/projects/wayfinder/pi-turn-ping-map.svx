@@ -45,6 +45,10 @@ A supervising Claude Code session orchestrating pi workers in herdr panes gets w
 - [Verify the wake loop end to end against a live worker](./verify-wake-loop-end-to-end.svx) — live run passed all four tests: wake-once per turn (tool-use turns emit nothing extra), no stale re-fire, one `turn_error` on mid-loop 401, startup failures correctly left to shepherd.
 - [Update the herdr-orchestration skill with the ping-based monitoring loop](./update-herdr-orchestration-skill.svx) — Monitoring section rewritten around `herdr-ping-wait` (arm → wake → harvest → re-arm), `agent wait` demoted to non-pi fallback, shepherd keeps `pane_gone`.
 
+## Follow-on (post-completion, 2026-07-12)
+
+- [Herdr plugin expansion ideas](./assets/herdr-plugin-expansion-ideas.svx) — researched growing the wake loop into a herdr plugin. Verdict: hybrid — plugin as host/distribution shell (lifecycle events into the same spool, retiring shepherd; installable packaging with doctor action; restrained error notifications), pi extension stays authoritative for turn semantics. A new effort if pursued, not a reopening of this map.
+
 ## Not yet specified
 
 - Cursor semantics when more than one supervising session consumes the same spool — per-consumer cursor files, or one orchestrator per pane by convention? Revisit when verification shows how the loop is actually driven.

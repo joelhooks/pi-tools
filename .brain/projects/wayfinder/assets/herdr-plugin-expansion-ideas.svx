@@ -1,0 +1,269 @@
+---
+title: "Herdr plugin expansion ideas for the turn-ping wake loop"
+type: "wayfinder_asset"
+created_at: "2026-07-12"
+---
+
+# Herdr plugin expansion ideas for the turn-ping wake loop
+
+## Verdict
+
+A Herdr plugin is a good **host and distribution shell** around the wake loop. It is not a replacement for the Pi extension that knows when a real Pi turn settles.
+
+The sharp shape is hybrid:
+
+1. Pi keeps emitting exact `turn_ended` / `turn_error` records.
+2. A Herdr plugin appends host lifecycle records such as `pane_closed`, `pane_exited`, and `agent_status_changed` to the same spool.
+3. The plugin owns setup/actions, optional native notifications, and later a dashboard pane.
+4. `herdr-ping-wait` remains the exact wake primitive until Herdr gains custom event registration or extensible waits.
+
+Do not collapse Pi's exact turn semantics into `pane.agent_status_changed`. Herdr status is useful lifecycle evidence, but the shipped map already records why status is not a reliable one-event-per-turn contract.
+
+## Sources and receipts
+
+### Installed surface, 2026-07-12
+
+Installed binary: `/Users/joel/.local/bin/herdr`, version `0.7.3`.
+
+```text
+$ herdr plugin --help
+install <owner>/<repo>[/subdir...] [--ref REF] [--yes]
+uninstall <plugin_id|owner/repo[/subdir...]>
+link <path> [--disabled]
+list [--plugin ID] [--json]
+config-dir <plugin_id>
+unlink|enable|disable <plugin_id>
+action <list|invoke>
+log list [--plugin ID] [--limit N]
+pane <open|focus|close>
+
+$ herdr notification --help
+show <title> [--body TEXT]
+  [--position top-left|top-right|bottom-left|bottom-right]
+  [--sound none|done|request]
+
+$ herdr wait --help
+output <pane_id> --match <text>
+  [--source visible|recent|recent-unwrapped] [--lines N]
+  [--timeout MS] [--regex] [--raw]
+agent-status <pane_id> --status <idle|working|blocked|done|unknown>
+  [--timeout MS]
+
+$ herdr integration --help
+install|uninstall pi|omp|claude|codex|copilot|devin|droid|kimi|
+opencode|kilo|hermes|qodercli|cursor|mastracode
+status [--outdated-only]
+
+$ herdr api --help
+snapshot
+schema [--json | --output PATH]
+```
+
+`herdr plugin list --json` returned an empty plugin list on this installed Herdr instance. The Callsign checkout exists, but it is not currently linked or installed.
+
+### What a plugin actually is
+
+The current public upstream is [ogulcancelik/herdr](https://github.com/ogulcancelik/herdr), not the task's guessed `badlogic/herdr`. First-party documentation lives at [herdr.dev/docs](https://herdr.dev/docs/), especially [Plugins](https://herdr.dev/docs/plugins/), [Socket API](https://herdr.dev/docs/socket-api/), [CLI reference](https://herdr.dev/docs/cli-reference/), and [Persistence and remote access](https://herdr.dev/docs/persistence-remote/).
+
+Herdr plugin v1 is manifest-driven and out-of-process. A plugin declares build commands, actions, event hooks, terminal panes, and link handlers in `herdr-plugin.toml`. Commands are argv arrays, run as the user from the plugin root, and are not sandboxed. There is no separate SDK or native non-terminal plugin UI.
+
+Runtime commands receive:
+
+- `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ENV=1`
+- `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`
+- `HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`
+- `HERDR_PLUGIN_CONTEXT_JSON`
+- available `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`
+- actions: `HERDR_PLUGIN_ACTION_ID`
+- events: `HERDR_PLUGIN_EVENT`, `HERDR_PLUGIN_EVENT_JSON`
+- panes: `HERDR_PLUGIN_ENTRYPOINT_ID`
+
+The docs recommend calling the CLI through `HERDR_BIN_PATH` for portability. Raw socket clients are appropriate for long-lived subscriptions.
+
+`herdr plugin install owner/repo[/subdir]` clones a GitHub repo, previews commands, optionally runs declared builds, then registers a managed checkout. `--ref` pins it. `herdr plugin link /path` registers a local working tree and does **not** run build commands. `unlink` unregisters without deleting the local tree. Config and state directories survive separately from managed plugin source. There is no separate plugin update command in v1; reinstall refreshes a GitHub-managed plugin.
+
+### Live Callsign example
+
+`~/Code/joelhooks/herdr-callsign/herdr-plugin.toml:1-6` defines plugin `callsign`, Herdr `>=0.7.0`, macOS/Linux. Lines 8-11 declare action `callsign.sync-title`. Lines 13-51 invoke the same `node sync-title.js` command for workspace, tab, and pane events.
+
+`~/Code/joelhooks/herdr-callsign/sync-title.js:19-23` reads `HERDR_SOCKET_PATH`. Lines 29-55 implement newline-delimited socket requests. Lines 199-233 query `workspace.list`, `pane.list`, `pane.current`, and `tab.get`; lines 287-294 call `client.window_title.set`.
+
+The hook receives its triggering event through environment variables, not stdin: `sync-title.js:258-268` reads `HERDR_PLUGIN_EVENT` and parses `HERDR_PLUGIN_EVENT_JSON`. Config comes from `HERDR_PLUGIN_CONFIG_DIR` (`sync-title.js:67-84`), and dedupe state uses `HERDR_PLUGIN_STATE_DIR` (`sync-title.js:270-285`).
+
+The install/link contract is documented at `~/Code/joelhooks/herdr-callsign/README.md:14-24`; manual action invocation is at lines 45-48.
+
+### Event catalog
+
+The installed binary is the strongest version-matched receipt:
+
+```text
+$ herdr api schema --output /tmp/herdr-schema.json
+```
+
+Its `request/$defs/Subscription` union enumerates the plugin/socket subscription names at generated schema lines 3088-3419:
+
+- Workspace: `workspace.created`, `workspace.updated`, `workspace.renamed`, `workspace.moved`, `workspace.closed`, `workspace.focused`
+- Worktree: `worktree.created`, `worktree.opened`, `worktree.removed`
+- Tab: `tab.created`, `tab.closed`, `tab.focused`, `tab.renamed`, `tab.moved`
+- Pane: `pane.created`, `pane.closed`, `pane.focused`, `pane.moved`, `pane.exited`, `pane.agent_detected`, `pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed`
+- Layout: `layout.updated`
+
+Concrete schema receipts: workspace events are at lines 3091-3160; worktree at 3162-3197; tab at 3198-3257; pane lifecycle at 3258-3329; filtered output/status/scroll subscriptions at 3330-3407; layout at 3408-3419.
+
+There is no `turn.*`, `message.*`, generic custom event registration, or plugin-defined event type. Unknown manifest event names produce link-time warnings; they do not create new host events.
+
+### Notifications are Herdr toasts, optionally OS-delivered
+
+`herdr notification show` maps to socket method `notification.show`. The [CLI reference](https://herdr.dev/docs/cli-reference/) says it uses configured `[ui.toast]` delivery. `--position` affects the in-app toast. `--sound done|request` uses Herdr's existing finished / needs-attention sounds when shown. OS-level delivery depends on toast configuration; it is not automatically a guaranteed macOS Notification Center event, and it is not a tab-badge API.
+
+This is useful operator feedback, but it does not wake a Claude `run_in_background` job. Treat notifications as a second output, not the wake transport.
+
+### Wait is closed, not extensible
+
+The installed CLI only exposes output matching and agent-status waits. The socket API also has `events.wait`, `events.subscribe`, and `pane.wait_for_output`, but plugin v1 has no `[[waits]]` manifest entry, custom event source, or predicate-registration API.
+
+Therefore Herdr cannot consume our spool as a native `herdr wait turn-ping` without an upstream Herdr change. A plugin can ship its own action/command, but that is still our CLI under plugin packaging.
+
+### Plugin panes are terminal panes
+
+```text
+$ herdr plugin pane
+open --plugin ID --entrypoint ID
+  [--placement overlay|split|tab|zoomed]
+  [--workspace ID] [--target-pane PANE] [--direction right|down]
+  [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]
+focus <pane_id>
+close <pane_id>
+```
+
+A `[[panes]]` entry launches an ordinary terminal program. Ownership follows the pane if it moves. This can host a TUI dashboard, but it is not a native sidebar widget.
+
+### Shepherd: what we can actually retire
+
+Installed source: `~/.claude/plugins/cache/herdr-shepherd/herdr-shepherd/0.1.0/scripts/shepherd.py`.
+
+Despite the brief's wording, Shepherd does not speak the socket protocol directly. It shells out to Herdr:
+
+- lines 42-52: `herdr pane list`, parse status and label
+- lines 55-59: `herdr pane read <pane> --lines 14`
+- lines 27-39, 62-70: hard-coded active and crash tail markers
+- lines 95-137: poll, debounce, and emit `pane_gone`, `pane_crashed`, or `pane_stopped`
+- lines 139-144: one-shot/follow lifecycle
+
+A Herdr plugin can cleanly replace Shepherd's host-lifecycle polling and `pane_gone` detection with `pane.closed` / `pane.exited` event hooks. It should **not** preserve Shepherd's guessed `pane_stopped` semantics for Pi; the Pi extension is more exact. Tail-signature crash detection may remain as a non-Pi fallback unless Herdr's exit/status event payload is enough in practice.
+
+### Existing spool contract we must preserve
+
+Source: [Lock the ping spool contract](../decide-ping-spool-contract.svx), Resolution section.
+
+- Directory: `~/.local/state/herdr-pings/`
+- One append-only JSONL file per pane; filename maps `:` to `-`, while every event carries raw `pane_id`
+- Required fields: `event`, `pane_id`, ISO UTC `timestamp`; unknown fields allowed
+- Pi events: `turn_ended`, `turn_error`; tail capped at 500 chars
+- Single append write, serialized by the writer; readers never truncate
+- Consumer-owned atomic byte cursor; first contact starts at EOF
+- Deliver first complete unconsumed line, advance past only that line, exit
+
+Because unknown events and extra fields are explicitly forward-compatible, Herdr lifecycle events can join this stream without breaking the reader. Use the existing required field names (`pane_id`, not Shepherd's `pane`; `timestamp`, not `ts`).
+
+## Ranked expansion ideas
+
+### 1. Unified Herdr lifecycle bridge into the same spool — **Top 1**
+
+**What it does:** manifest hooks append normalized `pane_closed`, `pane_exited`, and `agent_status_changed` records to each pane's existing JSONL spool. Optionally include workspace/tab, agent, status, exit code, and a short tail when available.
+
+**Herdr surface:** `[[events]]`, `HERDR_PLUGIN_EVENT_JSON`, CLI/socket reads when payload data is insufficient.
+
+**Improves/obsoletes:** replaces Shepherd's 15-second polling, debounce loop, and `pane_gone` path. Pi remains authoritative for settled turns/errors. The orchestrator gets one cursor and one wake protocol for both semantic turn events and host death.
+
+**Effort:** **M**. The append format is easy. The real work is event normalization, dedupe, pane-to-spool mapping after close, and proving whether `pane.exited` versus `pane.closed` gives the right crash distinction.
+
+**Guardrail:** do not emit `turn_ended` from `agent_status_changed`; use a different event name. Otherwise we reintroduce the exact false-idle problem this loop was built to avoid.
+
+### 2. Package the loop as an installable Herdr plugin bundle — **Top 2**
+
+**What it does:** publishes a normal `herdr-plugin.toml` repo with event bridge commands, setup/doctor actions, optional pane, and docs. Users install with `herdr plugin install joelhooks/<repo>` or link a checkout during development.
+
+**Herdr surface:** install/link lifecycle, `[[actions]]`, `[[events]]`, plugin config/state directories, logs.
+
+**Improves/obsoletes:** gives Herdr-owned discovery, version checks, logs, enable/disable, config/state locations, and one named package instead of loose host scripts. A `doctor` action can verify the Pi extension, spool path, CLI, and event hook without mutating anything.
+
+**Effort:** **M**, not S. The Herdr plugin cannot magically make Pi load its extension. Build commands run during install, but using them to mutate `~/.pi/agent/extensions` is surprising and hostile. Prefer an explicit setup action or documented one-time integration step. The Pi extension remains a separate host integration even if both artifacts live in one repo.
+
+**Kill the overclaim:** `herdr plugin install` does not by itself replace the hand-symlinked Pi extension unless we deliberately add an explicit, reviewable installer.
+
+### 3. Native notification fan-out for errors and worker completion — **Top 3**
+
+**What it does:** on selected spool/Herdr events, show a Herdr toast with worker label, event, and tail. Use `--sound request` for errors/crashes and perhaps `done` only for long-running completion.
+
+**Herdr surface:** `notification.show`; event hooks; optional config action.
+
+**Improves/obsoletes:** adds glanceable human feedback and benefits attached/local clients. It does not obsolete `herdr-ping-wait`, cursor semantics, or the Claude wake process.
+
+**Effort:** **S** for a conservative policy; **M** if dedupe, quiet hours, focused-pane suppression, and OS-delivery behavior are configurable.
+
+**Guardrail:** default notifications to errors/crashes and opt-in completion. One toast per normal turn would become useless noise fast.
+
+### 4. Mission-control plugin pane
+
+**What it does:** opens a terminal TUI listing panes, current Herdr status, latest spool event, timestamp, and 500-char tail; drill-in can focus the worker pane. It can subscribe to Herdr events and tail spool files.
+
+**Herdr surface:** `[[panes]]`, `plugin pane open|focus|close`, `events.subscribe`, `session.snapshot`, normal pane focus APIs.
+
+**Improves/obsoletes:** replaces ad hoc `pane list` + `pane read` sweeps for human supervision. It does not replace the orchestrator wake loop.
+
+**Effort:** **L**. A useful dashboard needs reconnect/snapshot logic, spool rotation handling, dead-pane cleanup, and a real TUI state machine. Build it only after several-worker use proves the view is needed.
+
+### 5. Naming-discipline nudge, not auto-fix
+
+**What it does:** listens to workspace/tab/pane create and rename events, detects default numeric/empty/stale labels, and emits a quiet toast or dashboard warning. An explicit action could apply a suggested rename.
+
+**Herdr surface:** `[[events]]`, `[[actions]]`, notifications, rename APIs.
+
+**Improves/obsoletes:** turns Joel's naming rule into feedback at the right boundary. It does not improve turn delivery directly.
+
+**Effort:** **M** for useful nudges; **L** for automatic stale-name judgments.
+
+**Kill auto-fix:** a plugin cannot infer the broad workstream reliably from pane output. Silent renames will create churn and wrong labels. Keep it explicit and probably ship it as a separate Callsign/naming plugin rather than bloating turn-ping.
+
+### 6. Native `herdr wait` replacement
+
+**What it would do:** expose `herdr wait turn-ping ...` backed by our spool.
+
+**Herdr surface:** none available in plugin v1. Existing waits only cover output/status and built-in socket events.
+
+**Improves/obsoletes:** would obsolete `herdr-ping-wait` if Herdr supported custom waits.
+
+**Effort:** **Not viable as a plugin**. **L/upstream** as a Herdr core proposal: custom event publication plus `events.wait`, or a plugin command namespace. Until then, shipping the existing CLI inside the plugin repo is packaging, not native wait extension.
+
+### 7. Multi-machine forwarding
+
+**What it does:** forwards Flagg's spool events to a Blaine orchestrator over the tailnet.
+
+**Herdr surface:** no cheap cross-machine plugin event bus. `herdr --remote` attaches a local thin client to a remote Herdr server, but plugin hooks still execute on the machine hosting that server/session. Named sessions also have separate sockets and runtime state.
+
+**Improves/obsoletes:** could wake a physically separate orchestrator, but it introduces delivery, auth, reconnect, duplicate, and cursor-ownership problems that the local file contract intentionally avoided.
+
+**Effort:** **L** and outside the current no-network-service shape.
+
+**Kill for now:** remote attach is not event forwarding. The cheap version is run the orchestrator against the remote host/session or use an existing fleet event bus later. Do not bolt a bespoke tailnet protocol onto this plugin.
+
+### 8. Spool hygiene and doctor actions (added)
+
+**What it does:** read-only `doctor` reports plugin/Pi integration state, cursor age, malformed/partial lines, and orphaned pane spools. A separate explicit prune action can remove old dead-pane files only after policy is decided.
+
+**Herdr surface:** `[[actions]]`, plugin logs, config/state dirs, `pane.list`.
+
+**Improves/obsoletes:** makes the hybrid seam inspectable and reduces future mystery. It does not change runtime semantics.
+
+**Effort:** **S** for doctor, **M** for safe GC.
+
+**Recommendation:** include doctor in the package. Defer GC until real spool growth provides a retention rule.
+
+## Top three recommendation
+
+1. **Unify host lifecycle events into the existing spool.** This removes polling and retires Shepherd's weakest path without weakening Pi turn semantics.
+2. **Wrap the hybrid system in an installable Herdr plugin package.** Use actions for setup/doctor; keep Pi installation explicit rather than hiding home-directory mutation in a build step.
+3. **Add restrained native notifications for errors/crashes first.** Treat them as operator feedback, never as the wake transport.
+
+Then use the system. If supervising several workers still requires repeated manual scans, build the mission-control pane. Do not build native wait, auto-renaming, or cross-machine forwarding before Herdr exposes the missing host contracts or actual use proves the pain.
