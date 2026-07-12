@@ -1,0 +1,84 @@
+---
+title: "Pi event semantics for Wayfinder turn pings"
+type: "wayfinder_asset"
+created_at: "2026-07-12"
+---
+
+# Pi event semantics for Wayfinder turn pings
+
+Research receipt: 2026-07-12.
+
+## Decision
+
+**For the Pi Joel runs today, emit the spool's `turn_ended` from `agent_settled`, not `turn_end` or raw `agent_end`.** Cache the latest `agent_end.messages` (and, if wanted, the latest `turn_end.turnIndex`) and write one event when `agent_settled` arrives.
+
+Why: installed Pi 0.80.6 defines `agent_settled` as the point where the run is fully settled and no retry, compaction, or queued continuation remains; its implementation emits it only after `agent.prompt()`, every retry/compaction continuation, and queue draining finish. That is exactly “worker finished responding, awaiting input.” [`installed dist/core/extensions/types.d.ts:529-549`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts#L529-L549), [`installed dist/core/agent-session.js:728-765`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js#L728-L765).
+
+The requested checkout is older (0.60.0) and has no `agent_settled`. In that checkout, `agent_end` is the least-wrong fallback, but it is emitted to extensions **before** retry and compaction decisions, so it can wake the orchestrator during an automatic continuation. [`types.ts:517-540`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L517-L540), [`agent-session.ts:448-509`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L448-L509).
+
+## Event mapping
+
+| Pi extension event | Available payload | Spool mapping | Reason |
+|---|---|---|---|
+| `agent_settled` (installed 0.80.6) | No payload | **`turn_ended`** after inspecting cached latest assistant message; if it ended with `stopReason: "error"`, emit `turn_error` instead | It is the true idle boundary. The installed type has only `type`; the implementation marks the run inactive and awaits extension handlers before resolving idle waiters. [`installed types.d.ts:534-537`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts#L534-L537), [`installed agent-session.js:279-296`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js#L279-L296) |
+| `agent_end` | `messages: AgentMessage[]` | **Cache only** on installed Pi. On checkout 0.60.0 only, fallback to `turn_ended`/`turn_error`, accepting retry wake noise | It ends one agent loop, but installed Pi may continue for retries, compaction, or messages queued by an `agent_end` handler. [`types.ts:522-526`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L522-L526), [`installed agent-session.js:742-765`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js#L742-L765) |
+| `turn_end` | `turnIndex`, `message`, `toolResults` | **Do not emit a spool wake event**; optionally cache `turnIndex` and message | It fires at the end of every model/tool turn and increments the turn index afterward. Tool-using responses therefore create intermediate events and wake-storm noise. [`types.ts:528-540`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L528-L540), [`agent-session.ts:552-567`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L552-L567) |
+| `session_shutdown` | Checkout: only `type`. Installed 0.80.6: `reason: "quit" | "reload" | "new" | "resume" | "fork"`, optional `targetSessionFile` | Optional distinct `session_shutdown`; **not `turn_error`** | It is a graceful lifecycle event, including reload/session replacement, not proof that a turn failed. [`types.ts:444-447`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L444-L447), [`installed types.d.ts:452-457`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts#L452-L457) |
+
+### Proposed spool payloads
+
+At `agent_end`, cache the final assistant message by scanning `event.messages` backward. Extract `last_message_tail` from its text content blocks; the assistant shape supplies `content`, `stopReason`, and optional `errorMessage`. [`packages/ai/src/types.ts:182-200`](~/Code/joelhooks/pi-mono/packages/ai/src/types.ts#L182-L200). At `agent_settled`, write exactly one of:
+
+```json
+{"event":"turn_ended","pane_id":"<HERDR_PANE_ID>","last_message_tail":"...","turn_index":3,"timestamp":"..."}
+{"event":"turn_error","pane_id":"<HERDR_PANE_ID>","error":"...","last_message_tail":"...","turn_index":3,"timestamp":"..."}
+```
+
+`turn_index` is optional because `agent_settled` does not carry it; cache the latest `turn_end.turnIndex` if useful. Do not call `agent_end.messages` a full session transcript: the API guarantees only an `AgentMessage[]`, not its historical scope. [`types.ts:522-526`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L522-L526).
+
+## Failure conditions visible to an extension
+
+1. **Final assistant `stopReason === "error"`: emit `turn_error`, but only when the run settles.** Use `errorMessage` as `error` and the text blocks as `last_message_tail`. Waiting for `agent_settled` suppresses transient retry/overflow failures that recover automatically. Assistant stop reasons and `errorMessage` are defined in [`packages/ai/src/types.ts:182-200`](~/Code/joelhooks/pi-mono/packages/ai/src/types.ts#L182-L200); installed Pi performs retry and compaction continuations before settling in [`installed agent-session.js:742-765`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js#L742-L765).
+2. **Retryable error with retries remaining: do not emit `turn_error` yet.** In checkout 0.60.0, retryable errors are selected from `stopReason: "error"` plus an error-message pattern, and `auto_retry_start` is emitted internally before continuation. [`agent-session.ts:2330-2345`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L2330-L2345), [`agent-session.ts:2367-2425`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L2367-L2425).
+3. **Retries exhausted or cancelled: emit one `turn_error` when settled.** The internal `auto_retry_end` carries `success: false`, attempt, and `finalError`, but it is an `AgentSessionEvent`, not an extension event: it appears in the internal union while the extension `on(...)` overloads expose no auto-retry hook. [`agent-session.ts:115-123`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L115-L123), [`agent-session.ts:2367-2414`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L2367-L2414), [`types.ts:955-993`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L955-L993). Therefore derive the final error from cached `agent_end.messages`.
+4. **Context overflow that compacts and retries: do not emit while recovery is running.** Checkout Pi removes the error message and continues after compaction; a second failed recovery remains an error. [`agent-session.ts:1769-1791`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L1769-L1791), [`agent-session.ts:1931-1940`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L1931-L1940).
+5. **`stopReason === "aborted"`: do not classify as `turn_error`.** It is a separate stop reason, normally user cancellation; Pi explicitly skips aborted-message compaction handling. [`packages/ai/src/types.ts:182-200`](~/Code/joelhooks/pi-mono/packages/ai/src/types.ts#L182-L200), [`agent-session.ts:1743-1749`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L1743-L1749).
+6. **Tool result `isError`: do not classify the whole turn as `turn_error`.** `turn_end` exposes tool results, but tool failure can be handled by a later assistant turn; the terminal worker result is the final assistant stop reason. [`types.ts:535-540`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L535-L540).
+7. **Graceful `session_shutdown`: do not emit `turn_error`.** It fires for normal quit/reload/session replacement and handlers are awaited. Installed reasons make this explicit. [`installed types.d.ts:452-457`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts#L452-L457).
+8. **Process death (`SIGKILL`, terminal/pane disappearance, crash before graceful shutdown): invisible to the extension.** The hook is emitted by graceful shutdown/reload code, so code that never runs cannot append a failure. Shepherd/pane monitoring must own `pane_gone`. Checkout interactive shutdown awaits the event before stopping. [`interactive-mode.ts:2664-2680`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L2664-L2680), [`agent-session.ts:2303-2323`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts#L2303-L2323).
+9. **An extension handler itself throws:** Pi catches and reports the extension error, then continues other handlers; there is no public extension event for subscribing to those runner errors. The spool writer should catch/log its own append failures. [`runner.ts:580-607`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/runner.ts#L580-L607), [`types.ts:955-993`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L955-L993).
+
+## Installed-Pi verification
+
+Commands run:
+
+```text
+$ which pi
+/Users/joel/.pi/agent/bin/pi
+$ realpath /Users/joel/.pi/agent/bin/pi
+/Users/joel/.local/bin/pi
+$ pi --version
+0.80.6
+```
+
+`~/.local/bin/pi` is a shell launcher that executes the FNM-global npm package at `~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`; it is not built from `~/Code/joelhooks/pi-mono`. [`~/.local/bin/pi:1-13`](~/.local/bin/pi#L1-L13). Installed package metadata says `@earendil-works/pi-coding-agent` 0.80.6 from `earendil-works/pi`; npm reports published `gitHead` `2b3fda9921b5590f285165287bd442a25817f17b`.
+
+The local checkout package is **0.60.0** and its current Git HEAD is `3ee46ed8` (`main`, `origin/main`). Thus the checkout and executable are materially different. The common hooks (`agent_end`, `turn_end`, `session_shutdown`) and their basic message/turn payloads still match, but installed 0.80.6 adds the decisive `agent_settled` hook and adds shutdown reason fields. Compare checkout registrations at [`types.ts:970-982`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L970-L982) with installed registrations at [`installed types.d.ts:847-860`](~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts#L847-L860).
+
+The DS4 search found `pi-ds4` installed as a Pi extension/package, not evidence that the Pi core executable is a local patched build. The system receipt explicitly records `pi install git:github.com/mitsuhiko/pi-ds4` and its extension/config paths. [`~/.brain/resources/local-model-runtime-stack.svx:71-74`](~/.brain/resources/local-model-runtime-stack.svx#L71-L74).
+
+## Extension mechanics
+
+A local extension is a TypeScript/JavaScript module whose default export is a factory receiving `ExtensionAPI`; handlers register with `pi.on("event_name", handler)`. The API's overloads enumerate supported event names. [`types.ts:947-982`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L947-L982). A live local example uses `export default function memoryCapture(pi)` and registers async `turn_end` and `session_shutdown` handlers. [`~/.pi/agent/extensions/memory-capture/index.ts:228-249`](~/.pi/agent/extensions/memory-capture/index.ts#L228-L249).
+
+Handlers may be synchronous or async: `ExtensionHandler` returns either a value/void or a Promise, and the runner awaits each handler. [`types.ts:943-945`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts#L943-L945), [`runner.ts:580-590`](~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/runner.ts#L580-L590).
+
+**Await the JSONL append inside the handler. Do not fire-and-forget it.** Awaiting gives ordering, lets graceful shutdown wait for disk completion, and routes failures through the runner's error handling. Fire-and-forget can be lost on immediate process exit and can become an unhandled rejection. For tiny local JSONL writes, `await appendFile(path, line + "\n", "utf8")` is the safe default; serialize appends through a module-local promise chain if handlers could overlap.
+
+Read pane identity directly from the inherited Node environment:
+
+```ts
+const paneId = process.env.HERDR_PANE_ID;
+```
+
+This is ordinary module/runtime state, not an Extension API method. Existing local extensions read configuration directly from `process.env`. [`~/.pi/agent/extensions/memory-capture/index.ts:30-32`](~/.pi/agent/extensions/memory-capture/index.ts#L30-L32). If `HERDR_PANE_ID` is absent, skip spool emission (or use the separately specified `herdr pane current` fallback); never create an anonymous/shared spool file.

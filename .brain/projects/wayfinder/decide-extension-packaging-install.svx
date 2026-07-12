@@ -1,0 +1,36 @@
+---
+title: "Decide packaging and install path that survives pi updates"
+type: "wayfinder_ticket"
+status: "closed"
+labels:
+  - "wayfinder:research"
+interaction: "AFK"
+parent: "./pi-turn-ping-map.svx"
+blockers: []
+created_at: "2026-07-12"
+assignee: "pi-worker wF:p3 (steered by claude wF:p1)"
+claimed_at: "2026-07-12"
+---
+
+# Decide packaging and install path that survives pi updates
+
+## Question
+
+Where does the extension's source live and how is it installed so `pi update` never clobbers it?
+
+- Confirm what `pi update --extensions` actually manages (which directory, what it overwrites, whether symlinks are preserved).
+- Weigh the two live precedents in `~/.pi/agent/extensions/`: standalone `.ts` file vs symlink into a repo (`skill-interpolation`, `memory-capture` both symlink into repos). Default expectation: source in `~/Code/joelhooks/pi-tools/herdr-turn-ping/`, symlinked in — but verify that survives updates rather than assuming.
+- Check the pi-ds4 local-patch precedent: if the extension needs anything from a patched pi build, document the ff-merge tag pattern; if not, say so explicitly so install notes stay simple.
+- Decide the install story for worker panes on other fleet machines (flagg) — is a one-line symlink instruction in the README enough, or does dark-wizard need a graft? (Lean simple; fleet distribution can be fog until someone actually runs workers off-laptop.)
+
+Resolution: the chosen layout and install steps, recorded in this ticket and reflected later in the extension README.
+
+## Resolution (2026-07-12)
+
+Full findings with file:line receipts: [Packaging and install findings](./assets/packaging-install-findings.svx). Researched by a pi worker (`wF:p3`), reviewed and recorded by the steering session.
+
+- **Layout:** extension source lives at `~/Code/joelhooks/pi-tools/herdr-turn-ping/` as a directory (`index.ts`, `README.md`; no `package.json` unless runtime deps force one — a directory-level `index.ts` is a valid pi entry point).
+- **Install:** `ln -sfn "$HOME/Code/joelhooks/pi-tools/herdr-turn-ping" "$HOME/.pi/agent/extensions/herdr-turn-ping"`. Pi's loader auto-discovers `~/.pi/agent/extensions/`, explicitly follows symlinked directories, and resolves `index.ts`.
+- **Survives updates, verified in source:** `pi update --extensions` calls the package manager's update over *configured package sources only* (managed installs under `~/.pi/agent/npm/` and `~/.pi/agent/git/`); it never touches the auto-discovery directory, so an unregistered symlink is outside the update set. (Managed *git* packages do get hard-reset on update — another reason not to install this as a managed package.)
+- **No patched pi needed.** All required hooks are public extension events; the pi-ds4 precedent is a normal managed package install, not a core patch — no ff-merge tag choreography in the README.
+- **Fleet:** no dark-wizard graft yet. Flagg install is the same README one-liner after cloning pi-tools; automate only if a real second-machine install proves it inadequate.

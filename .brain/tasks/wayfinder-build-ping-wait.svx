@@ -1,0 +1,26 @@
+---
+title: "Task: Build the herdr-ping-wait CLI"
+type: "wayfinder_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Build the herdr-ping-wait CLI
+
+You are resolving the wayfinder build ticket `.brain/projects/wayfinder/build-herdr-ping-wait-cli.svx`.
+
+## Binding input (implement verbatim, do not re-decide)
+
+**CONTRACT**: the Resolution section of `.brain/projects/wayfinder/decide-ping-spool-contract.svx` — spool paths/encoding, event schema, and especially the cursor rules (consumer-side `cursor.json`, atomic temp+rename updates, EOF-init on first contact, deliver-first-advance-one, partial lines are not events).
+
+## Build
+
+1. `herdr-ping-wait/` directory at the pi-tools repo root: the CLI source + `README.md`. Match how other pi-tools CLIs in this repo are laid out and exposed on PATH (inspect siblings like `herdr-monitor/`, `aliases/`, `setup.sh` and follow the repo's existing convention — likely a bun/node script + symlink into `~/.local/bin`).
+2. Interface: `herdr-ping-wait <pane_id...> [--timeout <seconds>] [--cursor <file>]`. Watches the spool files for the given pane ids (encode `:` → `-` per contract; files may not exist yet — treat as empty, watch for creation). Poll file sizes every 1s (skip fs-events; polling is the contract's floor and simpler). On the first new complete line across any watched spool: print that JSON line to stdout, advance that spool's cursor past it, exit 0. On timeout: exit 2, nothing consumed. Bad args: exit 1.
+3. Install on PATH per repo convention.
+4. Smoke (no pi needed — fabricate spool lines):
+   - `echo '{"event":"turn_ended","pane_id":"wT:p9","timestamp":"..."}' >> ~/.local/state/herdr-pings/wT-p9.jsonl` while a wait is running → wait prints it and exits 0.
+   - Run wait again with no new lines → times out with exit 2 (use `--timeout 3`).
+   - Append two lines while nothing waits, then run wait twice → first run delivers line 1, second delivers line 2, third times out. No replay of pre-cursor history on a fresh cursor (EOF-init check).
+   Paste the transcript into your DONE summary.
+
+Rules: do NOT commit; do NOT edit ticket files; write only under `herdr-ping-wait/` (plus PATH symlink, cursor/spool files under `~/.local/state/herdr-pings/`). Print `DONE: <summary + smoke transcript>` when finished.

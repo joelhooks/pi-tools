@@ -1,0 +1,32 @@
+---
+title: "Build the herdr-ping-wait CLI"
+type: "wayfinder_ticket"
+status: "closed"
+labels:
+  - "wayfinder:task"
+interaction: "AFK"
+parent: "./pi-turn-ping-map.svx"
+blockers:
+  - "./decide-ping-spool-contract.svx"
+created_at: "2026-07-12"
+assignee: "pi-worker wF:p3 (steered by claude wF:p1)"
+claimed_at: "2026-07-12"
+---
+
+# Build the herdr-ping-wait CLI
+
+## Question
+
+Implement `herdr-ping-wait <pane...> [--timeout N]` per the locked contract: block until a *new* line appears in any watched spool (fs-events or 1s offset poll), print the event JSON to stdout, exit 0; nonzero on timeout. Track consumed offsets in the cursor file so already-seen events never re-fire — including across orchestrator restarts and when events arrived while nothing was waiting. Handle spool files that don't exist yet (worker not started) and multiple events arriving between polls (deliver the first new one; the rest stay unconsumed for the next wait).
+
+Ship it on PATH (`~/.local/bin`, matching herdr's own install) from pi-tools.
+
+Resolution: working CLI with a smoke receipt — two sequential waits against a live worker pane deliver two distinct events, and re-running never replays an old one.
+
+## Resolution (2026-07-12)
+
+Built by pi worker `wF:p3`, code-reviewed by the steering session. Shipped: `herdr-ping-wait/herdr-ping-wait.ts` (bun script) + `README.md` in pi-tools, on PATH via `~/.local/bin/herdr-ping-wait` symlink.
+
+Implements the contract verbatim: 1s size-poll across all watched spools (missing file = empty, watched for creation); cursor at `~/.local/state/herdr-pings/cursor.json` (`--cursor` overridable), EOF-initialized on first contact, updated by atomic temp+rename; delivers the first new complete line only (partial lines without trailing newline are not events), advances past that line, prints the JSON, exit 0. Timeout → exit 2, nothing consumed; bad args → exit 1.
+
+Smoke receipt (fabricated spool lines, from the worker's transcript): live append during a wait → delivered, exit 0; no new lines → exit 2; two queued lines while nothing waited → delivered one per invocation in order, then exit 2; fresh cursor on a pane with existing history → no replay.
