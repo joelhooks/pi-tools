@@ -34,6 +34,8 @@ pi config  # enable/disable individual extensions
 | `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
 | `shortlink-qr` 🔗 | Create joel.dev shortlinks, generate HiDPI QR PNG/SVG assets, push via ShitRat, and record local Brain resources |
 
+The herdr turn-ping extension and wait CLI now live in [joelhooks/herdr-pings](https://github.com/joelhooks/herdr-pings).
+
 ## repo-autopsy
 
 Repo analysis tools clone into `~/.repo-autopsy` for cacheable inspection. `repo_add_source` additionally copies a repo into the current project under `.agent_sources/github.com/<owner>/<repo>` with `.agent-source.json` metadata, so agents can inspect active dependency source alongside project code.
