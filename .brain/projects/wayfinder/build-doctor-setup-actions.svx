@@ -1,0 +1,25 @@
+---
+title: "Build the doctor and setup plugin actions"
+type: "wayfinder_ticket"
+status: "open"
+labels:
+  - "wayfinder:task"
+interaction: "AFK"
+parent: "./herdr-pings-map.svx"
+blockers:
+  - "./create-herdr-pings-repo.svx"
+created_at: "2026-07-12"
+---
+
+# Build the doctor and setup plugin actions
+
+## Question
+
+Two `[[actions]]` in the herdr-pings manifest:
+
+- **doctor** (read-only, safe to run anytime): reports pi extension symlink present/valid, ping-wait CLI on PATH, spool dir writable, per-spool last-event age, cursor file age/validity, malformed or partial trailing lines, spools for panes that no longer exist. Prints a compact human-readable report; exits nonzero if the loop is broken.
+- **setup** (explicit, idempotent, prints what it does): creates the two symlinks (`~/.pi/agent/extensions/herdr-turn-ping`, `~/.local/bin/herdr-ping-wait`) into the plugin's checkout, creates the spool dir. This is the ONLY thing that mutates the home directory — never wired into install/build (guardrail from the research).
+
+Invoked via `herdr plugin action invoke`. Smoke: run doctor on a healthy system (green), break a symlink, doctor goes red, setup repairs it, doctor green again.
+
+Resolution: action sources + smoke transcript.

@@ -1,0 +1,20 @@
+---
+title: "Retire shepherd and update the orchestration docs"
+type: "wayfinder_ticket"
+status: "open"
+labels:
+  - "wayfinder:task"
+interaction: "AFK"
+parent: "./herdr-pings-map.svx"
+blockers:
+  - "./verify-plugin-end-to-end.svx"
+created_at: "2026-07-12"
+---
+
+# Retire shepherd and update the orchestration docs
+
+## Question
+
+The bridge covers pane death for ALL panes (not just pi), so shepherd's remaining value is ~zero. Uninstall the herdr-shepherd Claude plugin (or document why any sliver stays), and update `~/.claude/skills/herdr-orchestration/SKILL.md`: the monitoring section's fallback ladder drops shepherd, crash detection is now spool-native (`pane_exited`), and the plugin install/setup/doctor flow is the documented entry point. Only verified behavior gets documented. Also check whether the fleet's herdr-aware graft block should mention the plugin (keep it terse — probably just the skill).
+
+Resolution: what was removed, the updated skill section, and the herdr-pings README cross-check.

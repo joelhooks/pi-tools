@@ -1,0 +1,27 @@
+---
+title: "Verify herdr-pings as an installed plugin, end to end"
+type: "wayfinder_ticket"
+status: "open"
+labels:
+  - "wayfinder:task"
+interaction: "HITL"
+parent: "./herdr-pings-map.svx"
+blockers:
+  - "./build-lifecycle-bridge.svx"
+  - "./build-doctor-setup-actions.svx"
+  - "./build-error-notifications.svx"
+created_at: "2026-07-12"
+---
+
+# Verify herdr-pings as an installed plugin, end to end
+
+## Question
+
+With Joel watching: install from GitHub proper (`herdr plugin uninstall`/`unlink` the dev link first, then `herdr plugin install joelhooks/herdr-pings`), run `setup` and `doctor`, then drive the full loop:
+
+1. Worker turn end → one wake (pi extension path, as before).
+2. `kill -9` a worker pane's process → `pane_exited` wakes the waiter (the shepherd-retirement moment).
+3. Forced mid-loop error → one `turn_error` wake AND one toast; normal turns produce no toast.
+4. `doctor` reports green throughout; break something, watch it go red.
+
+Resolution: live-run receipt; any fixes fed back to build tickets.

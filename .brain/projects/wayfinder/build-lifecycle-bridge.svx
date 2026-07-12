@@ -1,0 +1,29 @@
+---
+title: "Build the herdr lifecycle bridge into the spool"
+type: "wayfinder_ticket"
+status: "open"
+labels:
+  - "wayfinder:task"
+interaction: "AFK"
+parent: "./herdr-pings-map.svx"
+blockers:
+  - "./create-herdr-pings-repo.svx"
+created_at: "2026-07-12"
+---
+
+# Build the herdr lifecycle bridge into the spool
+
+## Question
+
+Add `herdr-plugin.toml` to herdr-pings with `[[events]]` hooks on `pane.closed` and `pane.exited` (evaluate `pane.agent_status_changed` — include only if its payload adds real signal) that append normalized records to the affected pane's existing spool file, per the locked contract (required `event`/`pane_id`/`timestamp`; extra fields allowed):
+
+```json
+{"event":"pane_exited","pane_id":"wF:p5","timestamp":"...","exit_code":1,"agent":"pi"}
+{"event":"pane_closed","pane_id":"wF:p5","timestamp":"..."}
+```
+
+Distinct event names — NEVER `turn_ended`/`turn_error` from host events. Hook command reads `HERDR_PLUGIN_EVENT_JSON` (callsign precedent: `~/Code/joelhooks/herdr-callsign/sync-title.js`). Resolve what `pane.exited` vs `pane.closed` payloads actually distinguish (crash vs deliberate close) and record it. Dev via `herdr plugin link ~/Code/joelhooks/herdr-pings`.
+
+Smoke: link the plugin, open a pane, `kill -9` its shell → a `pane_exited` record lands in that pane's spool and `herdr-ping-wait` delivers it.
+
+Resolution: manifest + hook source, the exited/closed semantics receipt, smoke transcript.

@@ -1,0 +1,22 @@
+---
+title: "Build restrained error notifications"
+type: "wayfinder_ticket"
+status: "open"
+labels:
+  - "wayfinder:task"
+interaction: "AFK"
+parent: "./herdr-pings-map.svx"
+blockers:
+  - "./build-lifecycle-bridge.svx"
+created_at: "2026-07-12"
+---
+
+# Build restrained error notifications
+
+## Question
+
+Toast on failures only, via `herdr notification show --sound request`: `turn_error` events and `pane_exited` with nonzero exit. Never on normal `turn_ended` (noise guardrail from the research). Decide the mechanism with the bridge in hand — the bridge hook already handles `pane.exited`; for `turn_error` the cheapest path is the pi extension shelling `herdr notification show` directly when it writes a turn_error line (it already knows `HERDR_SOCKET_PATH` is present). Keep it fire-and-forget and failure-proof: a notification error must never break the worker or the spool write.
+
+Smoke: force a mid-loop 401 (receipt in the predecessor map's verify ticket) → exactly one toast; a normal turn → none.
+
+Resolution: mechanism choice + smoke receipt.
