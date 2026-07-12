@@ -1,0 +1,35 @@
+---
+title: "Pi session change ledger v1"
+type: "resource"
+status: "implemented_not_activated"
+created_at: "2026-07-12"
+privacy: "private"
+---
+
+# Pi session change ledger v1
+
+`change-ledger/` is an additive Pi extension. It appends one JSON object per line to `~/.local/state/joelclaw/change-ledger/YYYY-MM-DD.jsonl`. Fleet activation is intentionally outside this implementation.
+
+## Mutation record
+
+A successful Pi `write` or `edit` emits `event: "file-mutation"` with:
+
+- `schemaVersion`, `runtime`, `sessionId`, stable `runId`, `machineId`, `timestamp`
+- one immutable `changeSetId` shared by mutations in the same Pi turn
+- `operation` and `toolCallId`
+- `repo.remote`, `repo.worktreePath`, and the repository `head` at capture time
+- canonical repo-relative `path`
+- Git `preBlobHash` and `postBlobHash`
+- `commitStatus: "uncommitted"`
+
+Failed tool results emit nothing. Successful Bash results emit only `bash-mutation-unattributed`; v1 never parses command text.
+
+## Commit attribution
+
+`change-ledger/scripts/attribute-commit.ts` reads one or more ledgers and a real Git commit. It appends `event: "commit-attribution"` only from exact repository, path, and blob-hash equality. The event includes SHA, parent, commit timestamp, matched paths, contributing session/change-set IDs, and explicit unattributed paths. If distinct sessions/change sets have the same path and blob, attribution stays explicitly ambiguous rather than inventing an owner. Timestamps are evidence, never a join key.
+
+## Feasibility verdict
+
+For Pi, the session-to-page verdict can flip from **impossible** to **deterministically derivable** only after this extension runs fleet-wide and commits are passed through the attribution script or a later hook. The code and live fixture prove the capture contract locally; they do not prove fleet coverage yet.
+
+Claude and Codex still need equivalent capture. Shell worktree diffing, superseded/reverted markers, and amend/squash/rebase/cherry-pick lineage remain follow-ups.
