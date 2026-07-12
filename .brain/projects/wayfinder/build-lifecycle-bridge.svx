@@ -1,7 +1,7 @@
 ---
 title: "Build the herdr lifecycle bridge into the spool"
 type: "wayfinder_ticket"
-status: "open"
+status: "closed"
 labels:
   - "wayfinder:task"
 interaction: "AFK"
@@ -29,3 +29,12 @@ Distinct event names — NEVER `turn_ended`/`turn_error` from host events. Hook 
 Smoke: link the plugin, open a pane, `kill -9` its shell → a `pane_exited` record lands in that pane's spool and `herdr-ping-wait` delivers it.
 
 Resolution: manifest + hook source, the exited/closed semantics receipt, smoke transcript.
+
+## Resolution (2026-07-12)
+
+Built by pi worker `wF:p6`, reviewed by steering, shipped in herdr-pings `ff362ab`.
+
+- `bridge/lifecycle.js`: maps `pane.exited` → `pane_exited`, `pane.closed` → `pane_closed`, appends one contract-conformant line to the pane's spool via O_APPEND; stderr-only on failure. Optional `workspace_id`/`exit_code`/`agent` fields emitted if herdr ever supplies them.
+- **Empirical semantics receipt** (throwaway linked plugin, live kill test): `pane.exited` fires when the terminal process dies without a herdr close command; `pane.closed` on deliberate `herdr pane close`. Neither payload carries exit_code or agent today. Full notes in `bridge/README.md`.
+- Live smoke: killed pane `wF:pA` → waiter received exactly one `pane_exited`.
+- Manifest snippet honored the partition; steering assembled the real `herdr-plugin.toml` from both workers' snippets.

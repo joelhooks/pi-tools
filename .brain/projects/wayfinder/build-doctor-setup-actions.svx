@@ -1,7 +1,7 @@
 ---
 title: "Build the doctor and setup plugin actions"
 type: "wayfinder_ticket"
-status: "open"
+status: "closed"
 labels:
   - "wayfinder:task"
 interaction: "AFK"
@@ -25,3 +25,11 @@ Two `[[actions]]` in the herdr-pings manifest:
 Invoked via `herdr plugin action invoke`. Smoke: run doctor on a healthy system (green), break a symlink, doctor goes red, setup repairs it, doctor green again.
 
 Resolution: action sources + smoke transcript.
+
+## Resolution (2026-07-12)
+
+Built by pi worker `wF:p7`, reviewed by steering (one fix: doctor treated a never-created cursor.json as failure — first contact is now healthy), shipped in herdr-pings `ff362ab`.
+
+- `actions/doctor.ts`: read-only; checks both symlinks (target-exact), CLI on PATH, spool dir writable, per-spool last-event age + malformed/partial line counts split active-vs-stale panes (via `herdr pane list`), cursor validity incl. offsets beyond EOF. Nonzero exit on any active failure.
+- `actions/setup.ts`: idempotent, prints every mutation, derives targets from `HERDR_PLUGIN_ROOT` (plugin-managed) falling back to its own checkout — same code for linked dev and installed plugin.
+- Smoke: green → broke CLI symlink → red → setup repaired → green. Steering re-ran doctor post-manifest: all green, 8 active spools, 0 malformed.
