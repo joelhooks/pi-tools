@@ -1,0 +1,58 @@
+---
+title: "Lock the ping spool contract"
+type: "question"
+kind: "grilling"
+status: "closed"
+interaction: "HITL"
+parent: "./pi-turn-ping-brief.svx"
+blockers:
+  - "./research-pi-extension-event-semantics.svx"
+created_at: "2026-07-12"
+---
+
+# Lock the ping spool contract
+
+## Question
+
+What exactly is the interface between the extension (writer) and `herdr-ping-wait` (reader)? This is the seam both build tickets depend on, so it gets locked once, with Joel in the loop.
+
+To settle:
+
+- Spool path: brief proposes `~/.local/state/herdr-pings/<pane_id>.jsonl`, but pane ids contain `:` (`wF:p1`) — pick a filename encoding (e.g. `wF-p1.jsonl`) and a canonical decode rule.
+- Event schema: brief proposes `{pane, session, event, ts, last_message_tail}` — confirm field names, what `session` means (pi session id? herdr workspace:tab?), tail length cap, and the `turn_error` payload shape (from [Research pi extension event semantics](./research-pi-extension-event-semantics.svx)).
+- Cursor file: where consumed offsets live (per-consumer file in the same dir? orchestrator-side state?), and the atomicity story for concurrent append + read (JSONL append + byte-offset cursor is the working assumption).
+- Write discipline: single-line JSON, O_APPEND, no locks needed at these rates — confirm or complicate.
+
+Resolution: a short CONTRACT section (paths, schema, cursor rules) posted here; both build tickets implement it verbatim.
+
+## Resolution — CONTRACT (2026-07-12, approved by Joel: "your leans are fine")
+
+Both build tickets implement this verbatim.
+
+### Spool files (writer: the extension)
+
+- Directory: `~/.local/state/herdr-pings/` — writer `mkdir -p`s it.
+- One file per pane: `<pane_id with ":" → "-">.jsonl` (e.g. `wF:p1` → `wF-p1.jsonl`). Filename decoding is never required: every event line carries the raw `pane_id`.
+- Write discipline: one single-line JSON object per event, written with a single `O_APPEND` write (`fs.appendFile`), awaited inside the handler, no locks. Appends serialized through a module-local promise chain.
+- No `HERDR_PANE_ID` in env (after `herdr pane current` fallback fails) → emit nothing. Never an anonymous/shared spool.
+
+### Event schema
+
+```json
+{"event":"turn_ended","pane_id":"wF:p2","session":"<pi session id/file if cheaply available>","turn_index":3,"last_message_tail":"...","timestamp":"2026-07-12T17:00:00.000Z"}
+{"event":"turn_error","pane_id":"wF:p2","session":"...","turn_index":3,"error":"<errorMessage>","last_message_tail":"...","timestamp":"..."}
+```
+
+- `event`, `pane_id`, `timestamp` (ISO-8601 UTC) are required; everything else optional — consumers must tolerate absence.
+- `last_message_tail`: final assistant message text, tail-capped at **500 chars**.
+- `session`: pi's session identifier if the extension API exposes it cheaply; otherwise omitted. Consumers must not key on it.
+- Unknown extra fields are allowed (forward-compatible); consumers ignore them.
+
+### Cursor (reader: herdr-ping-wait)
+
+- Consumer-side, per-consumer: default `~/.local/state/herdr-pings/cursor.json`, overridable with `--cursor <file>` (multi-orchestrator later = separate cursor files). Spool files are never truncated or rewritten by readers.
+- Shape: `{ "<spool path>": <consumed byte offset> }`, updated atomically (write temp + rename) after delivering an event.
+- First-ever contact with a spool (no cursor entry): initialize to current EOF — never replay a pane's history. With an existing entry, everything past the offset is deliverable, which covers events that arrived while nothing was waiting.
+- Delivery: on new complete line(s) past the cursor, deliver the **first** new event (print JSON to stdout, advance cursor past that line only, exit 0); later lines stay unconsumed for the next wait. A partial line (no trailing `\n`) is not yet an event.
+
+Filed under fog for later, unchanged: rotation/GC and richer telemetry.

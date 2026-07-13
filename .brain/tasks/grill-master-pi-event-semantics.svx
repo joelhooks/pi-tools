@@ -1,0 +1,31 @@
+---
+title: "Task: Research pi extension event semantics for turn-end and error pings"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Research pi extension event semantics for turn-end and error pings
+
+You are resolving a grill-master research ticket. Read it first:
+`.brain/projects/grill-master/research-pi-extension-event-semantics.svx`
+Context (skim Notes + Destination): `.brain/projects/grill-master/pi-turn-ping-map.svx`
+
+## Your job
+
+Answer the ticket's Question with receipts. Sources:
+
+- pi extension API types: `~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/extensions/types.ts`
+- Emission sites: `~/Code/joelhooks/pi-mono/packages/coding-agent/src/core/agent-session.ts` (see the `agent_end` / `turn_end` emit paths and the retry logic around them)
+- Existing local extensions as API-usage examples: `~/.pi/agent/extensions/*.ts` and the symlinked repos there
+- Installed pi: `which pi`, `pi --version`, and figure out whether it's built from the local `pi-mono` checkout or upstream (check the binary path, package.json version in the checkout, and any pi-ds4 patch receipts you can find — try `rg -i "ds4" ~/Code/joelhooks/pi-mono ~/.brain` and jj/git log in pi-mono)
+
+## Deliver
+
+Write your findings to `.brain/projects/grill-master/assets/pi-event-semantics-findings.md`:
+
+1. **Event mapping table**: which pi event(s) should produce the spool's `turn_ended` event (decide and defend: `agent_end` vs `turn_end` — the orchestrator wants "worker finished responding, awaiting input") and what payload fields are available (message text for `last_message_tail`, turnIndex, etc.).
+2. **Error condition list**: every way a worker failure surfaces to an extension (`stopReason === "error"`, auto-retry events, `session_shutdown`, anything else you find), and exactly which should emit `turn_error` with what payload. Note what an extension can NOT see (process death).
+3. **Installed-pi verification receipt**: version, build source, and whether its extension API matches the checkout you read.
+4. **Extension mechanics**: how a pi extension is structured (export shape, how handlers register with `on(...)`), whether handlers can be async / fire-and-forget file appends safely, and how they read env vars like `HERDR_PANE_ID`.
+
+Cite file:line for every claim. Do NOT edit the ticket file, do NOT commit, do NOT touch anything outside `.brain/projects/grill-master/assets/`. Work autonomously. Print `DONE: <one-line summary>` when finished.

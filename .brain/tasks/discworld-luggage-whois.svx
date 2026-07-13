@@ -1,0 +1,41 @@
+---
+title: "Task: The Luggage GC, whois roll call, and doctor's clacks"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: The Luggage GC, whois roll call, and doctor's clacks
+
+Repo: `~/Code/joelhooks/herdr-pings`. **You own `actions/`, `herdr-plugin.toml`, `README.md`, and the new `herdr-whois/` dir.** Sibling workers own `herdr-callsign/` and `bridge/`+`herdr-turn-ping/` — do not touch those.
+
+## 1. The Luggage (actions/luggage.ts + manifest entry)
+
+The spool GC, properly themed. `herdr plugin action invoke luggage --plugin herdr-pings`:
+
+- Eats: spool files for panes not in `herdr pane list` whose last event is older than 7 days; cursor entries pointing at files that no longer exist; empty spool files for dead panes.
+- NEVER touches spools of live panes or anything younger than the threshold. `--dry-run`? Actions can't take args in v1 — instead print what it WOULD eat first, then eat, listing each item: `The Luggage ate wT-p9.jsonl (last event 9d ago, pane long gone)`. End with a count: `The Luggage is satisfied. 4 items consumed.` (empty run: `The Luggage waits. Nothing worth eating.`)
+- Wire `[[actions]]` entry in `herdr-plugin.toml` (you own the manifest this round).
+
+## 2. herdr-whois (new dir herdr-whois/herdr-whois.ts, PATH symlink via setup)
+
+The roll call. Bun CLI, no args required:
+
+```
+Scunnered Vimes      🌉 building the pane-death bridge    settled 2m ago
+Serene Henry         🔎 researching plugin ideas          errored 40s ago
+```
+
+- Join `herdr agent list` (name=callsign, pane_id, status) + `herdr pane list` (label) + each pane's spool tail (last event type + age). Aligned columns, sorted by recency. Live panes only; `--all` includes dead panes' spools (marked `pane gone`).
+- Exit 0 always (it's a report). Add its symlink (`~/.local/bin/herdr-whois`) to `actions/setup.ts` and its check to `actions/doctor.ts`, consistent with existing entries.
+
+## 3. Doctor's clacks + banners + Igor setup (actions/doctor.ts, actions/setup.ts)
+
+- Doctor all-green: final two lines are `FABRICATI DIEM, PVNC` then `GNU Terry Pratchett` (the clacks overhead — the name keeps moving).
+- Doctor any-red: final line is a random Hex error (`+++ Out Of Cheese Error. Redo From Start +++` style, pool of 3-4) BEFORE the nonzero exit. Checks themselves stay plain and diagnostic.
+- Setup output in Igor-speak, meaning intact: `Yeth, marthter — created thymlink ...`, `unchanged thymlink ...`, `The thpool directory ith ready.` Keep paths verbatim (never lisp a path).
+
+## 4. README
+
+Add a short "The fun parts" section: whois, the Luggage, Death notices, Hex errors, mood drift (sibling worker is building it — describe it as: moods drift with events, three straight errors and the worker is renamed Rincewind), GNU Terry Pratchett.
+
+Verify: `bun build --no-bundle` everything you wrote; run `bun actions/doctor.ts` and `bun herdr-whois/herdr-whois.ts` live and paste output. Do NOT commit. Print `DONE: <receipts>`.

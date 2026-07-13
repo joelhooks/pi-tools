@@ -1,0 +1,26 @@
+---
+title: "Task: Mood drift — callsign moods become live telemetry"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Mood drift — callsign moods become live telemetry
+
+Repo: `~/Code/joelhooks/herdr-pings`. **You own `herdr-callsign/` ONLY.** Two sibling workers are editing `bridge/`+`herdr-turn-ping/` and `actions/`+manifest — do not touch those.
+
+## The feature
+
+Today `herdr-callsign/index.ts` rolls one random mood at assignment. Make the mood drift with events so `herdr agent list` reads as an emotional weather report:
+
+- **Error escalation**: a `stopReason === "error"` settle bumps the mood up a ladder — whatever the current mood → `Vexed` → `Apoplectic`. A **third** consecutive error abandons dignity entirely: the agent is renamed just `Rincewind` (no mood, he runs from everything). Base-name reservation logic must treat a Rincewind'd agent correctly (its base is now Rincewind).
+- **Recovery drift**: a clean settle steps back down — from `Apoplectic`/`Rincewind` → `Vexed` → (original random mood or `Chipper`) → after 2+ consecutive clean settles, `Serene`.
+- **The long grind**: a single run (agent_start → agent_settled) longer than 10 minutes sets `Forfochten` (unless currently error-escalated — errors outrank tiredness).
+
+## Mechanics
+
+- You already hook `agent_start`/`agent_settled`. Detect errors the way herdr-turn-ping does: cache the final assistant message at `agent_end`, check `stopReason` at settle. Track consecutive error/clean counts and run start time in module state.
+- On mood change: `herdr agent rename <paneId> '<Mood> <Base>'` (execFileSync, 2s timeout, silent failure) AND update `process.env.HERDR_CALLSIGN` so turn-ping stamps the *current* mood into spool events.
+- Rename ONLY on transitions — no churn on steady state.
+- Respect the existing adopt-don't-stomp rule at startup; drift only applies to names this extension assigned (it knows: it set them).
+
+Verify: `bun build --no-bundle herdr-callsign/index.ts` passes; then a REASONING receipt in your DONE (walk the ladder: fresh → error → error → error → clean → clean → clean, list the name at each step). Live smoke is the steering session's job. Do NOT commit. Print `DONE: <ladder walk>` when finished.

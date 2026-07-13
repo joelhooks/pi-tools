@@ -1,0 +1,40 @@
+---
+title: "Verify the wake loop end to end against a live worker"
+type: "question"
+kind: "task"
+status: "closed"
+interaction: "HITL"
+parent: "./pi-turn-ping-brief.svx"
+blockers:
+  - "./build-pi-turn-ping-extension.svx"
+  - "./build-herdr-ping-wait-cli.svx"
+created_at: "2026-07-12"
+assignee: "claude wF:p1 (steering session, live with Joel)"
+claimed_at: "2026-07-12"
+---
+
+# Verify the wake loop end to end against a live worker
+
+## Question
+
+Drive the real loop the way a supervising Claude session will: spawn a pi worker in a herdr pane, run `herdr-ping-wait` via Bash `run_in_background`, send the worker a prompt, and confirm the orchestrator wakes exactly once when the turn ends — then again for a second turn, with no duplicate or stale fires (the two failure modes shepherd has today). Exercise the error path (kill the provider request or force a stream error) and confirm `turn_error` wakes the waiter. Confirm the shepherd fallback boundary: pane death (`pane_gone`) is still shepherd's job — document the split.
+
+Compare against `herdr agent wait --status idle` on the same run to record why the ping loop wins (or where it doesn't).
+
+HITL because Joel should watch at least one live run and sign off on the feel of the loop before the skill doc changes.
+
+Resolution: a receipt of the live run (commands + observed events) posted here, plus any contract or code fixes fed back to the build tickets.
+
+## Resolution (2026-07-12) — live run receipt, all tests passed, no code changes needed
+
+Run by the steering session (`wF:p1`) with Joel live; fresh worker pane `wF:p4` (`wf-verify`) so the extension was loaded at pi startup.
+
+1. **Turn end wakes once.** Armed `herdr-ping-wait wF:p4 --timeout 180` via `run_in_background`, then `herdr pane run wF:p4 'pi "<one-sentence prompt>"'`. Waiter exited 0 printing `{"event":"turn_ended","pane_id":"wF:p4",...,"turn_index":0,"last_message_tail":"I'm alive."}`.
+2. **No stale re-fire.** Immediate re-run `herdr-ping-wait wF:p4 --timeout 5` → exit 2, nothing delivered. This is the shepherd bug, absent.
+3. **Second turn, with tool use, still one event.** Re-armed the waiter, sent a follow-up forcing a shell tool call (`herdr agent send` + `send-keys enter`). Waiter delivered `turn_index:1` with the tool output in the tail. Spool holds exactly 2 lines for 2 exchanges — the tool-call turn produced no extra event, confirming `agent_settled` (not `turn_end`) was the right emission point.
+4. **Error path.** Startup auth failure (`pi --provider openai` with no key) never reaches the agent loop → no spool event, as the research predicted; that failure class stays with shepherd/`pane_gone`. A **mid-loop** failure (`OPENAI_API_KEY=sk-invalid... pi --provider openai --model gpt-4o-mini -p hi`) produced exactly one `turn_error` line carrying the full 401 message in `error`.
+5. **EOF-init observed in the wild:** the `wV:err` spool line was written before any watcher had ever seen that spool; a fresh wait starts at EOF and correctly does not replay it.
+
+Comparison receipt vs `herdr agent wait`: earlier this same session, herdr's coarse status reported both build workers `idle · startup` while they were visibly mid-task — the heuristic status the old loop depends on. The ping loop keys on pi's own settle event instead and carries turn semantics + message tail, which `agent wait` cannot.
+
+Boundary confirmed: extension owns "turn settled / turn errored"; shepherd (or `pane_gone` watching) owns process death and non-pi panes.

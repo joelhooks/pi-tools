@@ -1,0 +1,24 @@
+---
+title: "Task: Build the pi turn-ping extension"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Build the pi turn-ping extension
+
+You are resolving the grill-master build ticket `.brain/projects/grill-master/build-pi-turn-ping-extension.svx`. You already researched the event semantics in this session — build on that.
+
+## Binding inputs (implement verbatim, do not re-decide)
+
+- **CONTRACT**: the Resolution section of `.brain/projects/grill-master/decide-ping-spool-contract.svx` — spool path/encoding, event schema, write discipline.
+- **Event mapping**: the Resolution section of `.brain/projects/grill-master/research-pi-extension-event-semantics.svx` (your own findings: `.brain/projects/grill-master/assets/pi-event-semantics-findings.svx`). Emit on `agent_settled`; cache `agent_end.messages` (+ latest `turn_end.turnIndex`); `turn_error` only for settled `stopReason: "error"`.
+- **Packaging**: the Resolution section of `.brain/projects/grill-master/decide-extension-packaging-install.svx` — directory `herdr-turn-ping/` at repo root with `index.ts` + `README.md`.
+
+## Build
+
+1. `herdr-turn-ping/index.ts` — default-export factory, target the installed pi 0.80.6 API (`~/.local/share/fnm/aliases/default/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts`). Pane id from `process.env.HERDR_PANE_ID`, fallback `herdr pane current` (exec once at startup, cached); if neither resolves, register nothing / emit nothing. Await appends; serialize via a promise chain; catch and swallow (log via pi's notify at most once) append failures — the extension must never break a worker.
+2. `herdr-turn-ping/README.md` — what it does, the spool contract gist, and install per the packaging resolution (the `ln -sfn` one-liner, plus the flagg note).
+3. Install it: run the symlink one-liner.
+4. Smoke: `cd /tmp && HERDR_PANE_ID='wT:p9' pi -p "say hi"` (or equivalent non-interactive run), then verify exactly one `turn_ended` line landed in `~/.local/state/herdr-pings/wT-p9.jsonl` with the schema fields. Paste the line into your DONE summary.
+
+Rules: do NOT commit; do NOT edit ticket files; write code only under `herdr-turn-ping/` (plus the symlink and the smoke spool file). TypeScript that pi's loader runs directly — no build step. Print `DONE: <summary + smoke receipt>` when finished.

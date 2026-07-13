@@ -1,0 +1,17 @@
+---
+title: "Task: Build the doctor and setup actions"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Build the doctor and setup actions
+
+You are resolving `.brain/projects/grill-master/build-doctor-setup-actions.svx` (in pi-tools; read it + the map `.brain/projects/grill-master/herdr-pings-map.svx` Notes). Code lives in `~/Code/joelhooks/herdr-pings`.
+
+Execute the ticket. Constraints beyond it:
+
+- **You own `actions/` only.** Do NOT create or edit `herdr-plugin.toml` (another worker builds event hooks in parallel; steering assembles the manifest). Write `actions/manifest-snippet.toml` with your exact `[[actions]]` entries.
+- `actions/doctor.ts` (read-only) and `actions/setup.ts` (explicit, idempotent, prints every mutation) per the ticket. Bun scripts. Symlink targets derive from `HERDR_PLUGIN_ROOT` when present (plugin-managed checkout) falling back to the script's own location — so the same code works for a linked dev checkout and a `plugin install`ed one.
+- Doctor checks the spool contract as documented in the repo README; keep output compact (one line per check, ✓/✗, nonzero exit on any ✗).
+- Smoke: run doctor directly (green), `rm` the CLI symlink, doctor red, setup repairs, doctor green. Paste transcript into DONE.
+- Do NOT commit. Print `DONE: <gist + smoke transcript>` when finished.

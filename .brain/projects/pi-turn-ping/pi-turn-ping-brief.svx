@@ -1,0 +1,59 @@
+---
+title: "Chart the pi turn-ping wake loop for herdr orchestration"
+type: "brief"
+status: "complete"
+created_at: "2026-07-12"
+privacy: "private"
+---
+
+# Chart the pi turn-ping wake loop for herdr orchestration
+
+## Finish line
+
+A supervising Claude Code session orchestrating pi workers in herdr panes gets woken exactly once per worker end-of-turn (and on worker error), with no stale re-fires and no blind windows. Shipped and verified: a pi extension that appends turn-end/error events to a per-pane JSONL spool, a `herdr-ping-wait` CLI the orchestrator runs via `run_in_background`, install notes, and an updated monitoring loop in `~/.claude/skills/herdr-orchestration/SKILL.md`.
+
+## Notes
+
+**This map carries execution.** Joel's brief names code artifacts as the deliverable, so tickets here produce working, verified pieces — not just decisions.
+
+- Home repo: `~/Code/joelhooks/pi-tools` (plain git, GitHub remote). Precedent: it already hosts `herdr-monitor` and pi extensions symlinked into `~/.pi/agent/extensions/`.
+- Constraint from the brief: **files + processes only** — no network services. Claude Code's wake mechanism is a background Bash process exiting.
+- Shepherd (`herdr-shepherd` plugin, `shepherd.py`) stays as fallback for non-pi panes and `pane_gone` crash detection. Its known bugs (one-shot re-arm gap, stale `pane_stopped` re-fires) are why this loop exists; we route around them, not fix them.
+- `herdr agent wait <target> --status idle` exists but loses: one target per process, heuristic idle detection (coarse pane status, not turn semantics), no last-message tail. Verification should still compare against it.
+- Skills every session should consult: `/skill:herdr-orchestration`, `/skill:grill-master`. Follow pi-tools' pi-notes Brain workflow (run `pi-notes brain check` after Brain edits).
+
+### Recon receipts (verified 2026-07-12 against local pi-mono checkout and live herdr pane)
+
+> **Superseded in part:** the installed pi is `@earendil-works/pi-coding-agent` 0.80.6 via npm — not built from the pi-mono checkout (0.60.0). 0.80.6 adds `agent_settled`, which the closed research ticket picked over the events below. Target the installed API, not the checkout.
+
+- pi extension API (`pi-mono/packages/coding-agent/src/core/extensions/types.ts`): `turn_end` fires at the end of **each** turn inside the agent loop (carries `turnIndex`, `message`, `toolResults`); `agent_end` fires when the loop finishes — the actual "worker idle, awaiting input" moment (carries full `messages`). Error signals: assistant message `stopReason === "error"`, `auto_retry_start` events, `session_shutdown`.
+- herdr panes export `HERDR_PANE_ID` (e.g. `wF:p1`), `HERDR_SESSION`-equivalents via `HERDR_WORKSPACE_ID`/`HERDR_TAB_ID`, and `HERDR_SOCKET_PATH`. `herdr pane current` is the fallback. Note pane ids contain `:` — filename encoding needs a decision.
+- `~/.pi/agent/extensions/` contains both standalone `.ts` files and symlinks into repos (`skill-interpolation -> ~/Code/joelhooks/pi-skill-interpolation`, `memory-capture -> joelclaw/packages/pi-extensions/memory-capture`) — local extensions surviving `pi update` via symlink is an established pattern; confirm against `pi update --extensions` behavior and the pi-ds4 local-patch precedent.
+
+## Decision ledger
+
+<!-- Closed ticket resolutions are appended here as one-line linked gists. -->
+
+- [Research pi extension event semantics for turn-end and error pings](./research-pi-extension-event-semantics.svx) — emit `turn_ended` on `agent_settled` (installed pi 0.80.6's post-retry/compaction idle boundary; no payload, so cache `agent_end.messages` for the tail), `turn_error` only for settled `stopReason: "error"`; process death stays shepherd's job.
+- [Decide packaging and install path that survives pi updates](./decide-extension-packaging-install.svx) — source as a directory `pi-tools/herdr-turn-ping/`, symlinked into `~/.pi/agent/extensions/`; `pi update --extensions` only touches managed package dirs, so the symlink is safe; no patched pi, no dark-wizard graft yet.
+- [Lock the ping spool contract](./decide-ping-spool-contract.svx) — Joel approved: spool `~/.local/state/herdr-pings/wF-p1.jsonl`-style (`:` → `-`; events carry raw `pane_id`), required fields `event`/`pane_id`/`timestamp` with 500-char tail cap, consumer-side atomic cursor file defaulting to EOF on first contact, deliver-one-advance-one semantics.
+- [Build the pi turn-ping extension](./build-pi-turn-ping-extension.svx) — shipped `pi-tools/herdr-turn-ping/`, symlink-installed, smoke-proven: one `turn_ended` line per settled run.
+- [Build the herdr-ping-wait CLI](./build-herdr-ping-wait-cli.svx) — shipped `pi-tools/herdr-ping-wait/`, on PATH, smoke-proven: deliver-once, no replay, exit 0/2/1.
+- [Verify the wake loop end to end against a live worker](./verify-wake-loop-end-to-end.svx) — live run passed all four tests: wake-once per turn (tool-use turns emit nothing extra), no stale re-fire, one `turn_error` on mid-loop 401, startup failures correctly left to shepherd.
+- [Update the herdr-orchestration skill with the ping-based monitoring loop](./update-herdr-orchestration-skill.svx) — Monitoring section rewritten around `herdr-ping-wait` (arm → wake → harvest → re-arm), `agent wait` demoted to non-pi fallback, shepherd keeps `pane_gone`.
+
+## Follow-on (post-completion, 2026-07-12)
+
+- [Herdr plugin expansion ideas](./herdr-plugin-expansion-ideas.svx) — researched growing the wake loop into a herdr plugin. Verdict: hybrid — plugin as host/distribution shell (lifecycle events into the same spool, retiring shepherd; installable packaging with doctor action; restrained error notifications), pi extension stays authoritative for turn semantics. A new effort if pursued, not a reopening of this map.
+
+## Not yet specified
+
+- Cursor semantics when more than one supervising session consumes the same spool — per-consumer cursor files, or one orchestrator per pane by convention? Revisit when verification shows how the loop is actually driven.
+- Spool hygiene over weeks of use (rotation, GC of dead-pane files) — wait until real usage shows volume.
+- Whether the ping loop should also carry richer worker telemetry (token counts, tool errors mid-turn) once the minimal loop is proven.
+
+## Out of scope
+
+- Ping emitters for claude/codex workers — the brief keeps shepherd as the fallback for non-pi panes.
+- Fixing shepherd's stale-event / one-shot bugs upstream — kept as-is for fallback duty.
+- Any network service, and upstreaming a native turn-event feature into herdr itself.

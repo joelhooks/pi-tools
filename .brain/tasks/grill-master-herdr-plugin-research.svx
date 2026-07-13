@@ -1,0 +1,33 @@
+---
+title: "Task: Research growing the turn-ping wake loop into a herdr plugin"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Research growing the turn-ping wake loop into a herdr plugin
+
+Context: we just shipped a pi-extension + CLI wake loop (read `.brain/projects/grill-master/pi-turn-ping-map.svx` — Destination + Decisions so far). Joel asks: what could this become as a **herdr plugin**? Your job is research + ideas, NOT code.
+
+## Map the plugin surface first (receipts required)
+
+- `herdr plugin --help`, `herdr notification --help`, `herdr wait --help`, `herdr integration --help`, `herdr api --help` — capture what each actually offers.
+- The live example: `~/Code/joelhooks/herdr-callsign/` (`herdr-plugin.toml` + `sync-title.js` + README) — how a plugin receives events (env vars? stdin?), what `[[actions]]` and `[[events]]` can do, how `herdr plugin link` works.
+- Enumerate the event catalog: what `on = "..."` events exist beyond the ones callsign uses? Check herdr docs (`herdr plugin list --json` on installed plugins, any docs dir the binary ships, or https://github.com/badlogic/herdr or wherever `herdr update` points — find the real source/docs and cite them).
+- The installed herdr-shepherd Claude plugin (`~/.claude/plugins/cache/herdr-shepherd/.../scripts/shepherd.py`) — what it does with the socket API, since a herdr plugin would obsolete parts of it.
+- Our spool contract: `.brain/projects/grill-master/decide-ping-spool-contract.svx` (Resolution section).
+
+## Then: expansion ideas, ranked
+
+For each idea: what it does, which herdr surface it uses (events/actions/notification/plugin pane), what it obsoletes or improves in the current loop, and rough effort (S/M/L). Seed list to evaluate honestly (kill what's weak, add what I missed):
+
+1. Ship turn-ping as an installable herdr plugin (`herdr plugin install joelhooks/...`) instead of hand-symlinked extension + CLI.
+2. Plugin event bridge: herdr events (`pane.agent_status_changed`, pane closed/gone) appended to the SAME spool → one unified event stream, shepherd fully retired (crash detection included).
+3. `herdr notification` integration — do turn-end/error events become native notifications (macOS? tab badges?)?
+4. Plugin pane: a live dashboard pane showing all workers' last turn tails + status (the "mission control" view).
+5. Native `herdr wait` extension — does the built-in wait subsystem accept custom event sources, making our CLI unnecessary?
+6. Naming-discipline enforcement: plugin event on workspace/tab/pane created|renamed that nudges (or auto-fixes) unnamed/stale labels — Joel's ELI5 naming rule as software.
+7. Multi-machine: spool events forwarded across the tailnet (flagg workers waking a blaine orchestrator) — only if herdr's remote/session model supports it cheaply.
+
+## Deliver
+
+Write `.brain/projects/grill-master/assets/herdr-plugin-expansion-ideas.svx` (svx with frontmatter: title, type grill-master_asset, created_at) — surface map with receipts (file:line / command output), then ranked ideas with a clear top-3 recommendation. Do NOT commit, do NOT write code, do NOT install/uninstall plugins. Print `DONE: <top-3 gist>` when finished.

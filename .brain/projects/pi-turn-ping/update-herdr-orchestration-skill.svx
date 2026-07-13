@@ -1,0 +1,29 @@
+---
+title: "Update the herdr-orchestration skill with the ping-based monitoring loop"
+type: "question"
+kind: "task"
+status: "closed"
+interaction: "AFK"
+parent: "./pi-turn-ping-brief.svx"
+blockers:
+  - "./verify-wake-loop-end-to-end.svx"
+created_at: "2026-07-12"
+assignee: "claude wF:p1 (steering session)"
+claimed_at: "2026-07-12"
+---
+
+# Update the herdr-orchestration skill with the ping-based monitoring loop
+
+## Question
+
+Rewrite the "Monitoring (the steering loop)" section of `~/.claude/skills/herdr-orchestration/SKILL.md` around `herdr-ping-wait` as the primary mechanism for pi workers: the `run_in_background` invocation, harvesting the event JSON (including `last_message_tail`), re-arming for the next turn, and the fallback ladder (`herdr agent wait` / shepherd for non-pi panes and `pane_gone`). Only document what the verification receipt proved — no aspirational behavior.
+
+The skill file is machine-local per fleet rules; if it turns out to be a dark-wizard graft block, edit the source in dark-wizard and re-graft rather than editing in place — check for graft markers first.
+
+Resolution: updated SKILL.md (and dark-wizard commit if grafted), gist posted here.
+
+## Resolution (2026-07-12)
+
+Confirmed the skill is machine-local (no graft markers, no `herdr-orchestration` anywhere in dark-wizard) — edited `~/.claude/skills/herdr-orchestration/SKILL.md` in place.
+
+The Monitoring section now leads with `herdr-ping-wait` as the primary loop for pi workers: arm-before-work via `run_in_background`, event JSON semantics (`turn_ended`/`turn_error`, tail, turn_index), the arm → wake → harvest → follow-up → re-arm cycle, cursor/no-replay behavior, and the extensions-load-at-startup gotcha (a pre-install pi session never pings — relaunch). `herdr agent wait` is demoted to fallback for claude/codex workers with its coarse-status caveat spelled out; process death is explicitly routed to shepherd/`pane_gone`. Only live-verified behavior is documented; the verify ticket is linked as the receipt.

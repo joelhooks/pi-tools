@@ -1,0 +1,47 @@
+---
+title: "Chart the herdr-pings standalone repo and herdr plugin"
+type: "brief"
+status: "complete"
+created_at: "2026-07-12"
+privacy: "private"
+---
+
+# Chart the herdr-pings standalone repo and herdr plugin
+
+## Finish line
+
+The wake loop lives in its own **public** repo `joelhooks/herdr-pings`, installable as a herdr plugin: `herdr plugin install joelhooks/herdr-pings` gives the lifecycle bridge (herdr pane-death events appended to the same spool — shepherd retired), a read-only `doctor` action, an explicit `setup` action for the pi-extension and CLI symlinks, and restrained error notifications. Verified end to end; the herdr-orchestration skill documents the final loop.
+
+## Notes
+
+**This map carries execution** (Joel's standing pattern for this tooling). Joel approved: repo name `herdr-pings`, public, 2026-07-12 ("ya lfg").
+
+- Predecessor map (complete): [pi turn-ping wake loop](../pi-turn-ping/pi-turn-ping-brief.svx) — its Decisions hold the spool contract, event semantics, and packaging receipts. The contract is law: unknown event names and extra fields are forward-compatible; required fields `event`/`pane_id`/`timestamp`; readers never truncate.
+- Design basis: [Herdr plugin expansion ideas](./herdr-plugin-expansion-ideas.svx) — plugin surface map with receipts (env-var event delivery, `[[events]]`/`[[actions]]`/`[[panes]]`, no custom events, no extensible waits) and the ranked top-3 this map executes.
+- Key guardrails from that research: never emit `turn_ended` from `agent_status_changed` (distinct event names for host lifecycle); pi-extension install stays an explicit reviewable action, never hidden in a plugin build step; notifications are operator feedback, never the wake transport; default toasts to errors/crashes only.
+- Current artifacts to extract from `~/Code/joelhooks/pi-tools`: `herdr-turn-ping/`, `herdr-ping-wait/`. Live symlinks to re-point: `~/.pi/agent/extensions/herdr-turn-ping`, `~/.local/bin/herdr-ping-wait`.
+- Public repo: keep operator-private context (tailnet names, machine roles, Brain paths) out of code and docs.
+- Skills every session should consult: `/skill:herdr-orchestration`, `/skill:grill-master`.
+
+## Decision ledger
+
+- Repo name and visibility — Joel chose `herdr-pings`, public (matches the spool dir `~/.local/state/herdr-pings`).
+- [Create the herdr-pings repo and extract the wake loop](./create-herdr-pings-repo.svx) — live at https://github.com/joelhooks/herdr-pings, symlinks re-pointed, pi-tools cleaned (`2041ace`), post-move smoke green.
+- [Build the herdr lifecycle bridge into the spool](./build-lifecycle-bridge.svx) — `pane_exited`/`pane_closed` into the same spool; empirical receipt: exited = process death, closed = deliberate close, no exit_code/agent in today's payloads; kill-test delivered exactly one event.
+- [Build restrained error notifications](./build-error-notifications.svx) — toast after spool write, turn_error + pane_exited only; forced-401 and kill smokes green, zero toasts on normal turns.
+- [Verify herdr-pings as an installed plugin, end to end](./verify-plugin-end-to-end.svx) — prod: installed from GitHub, setup/doctor via plugin actions, crash + error verified under the managed checkout; bonus ship: herdr-name-sync (session names mirror to pane labels mechanically).
+- [Retire shepherd and update the orchestration docs](./retire-shepherd-update-docs.svx) — herdr-shepherd uninstalled; skill rewritten around plugin install/setup/doctor with the nested-pi gotcha.
+- [Build the doctor and setup plugin actions](./build-doctor-setup-actions.svx) — read-only doctor (active-vs-stale spool split, cursor validation) + idempotent setup; steering fixed fresh-install cursor false-negative; `herdr-plugin.toml` assembled from both workers' snippets, shipped `ff362ab`.
+
+## Not yet specified
+
+- Spool GC/retention policy — the `doctor` action reports spool state first; a prune action waits until real growth suggests a rule.
+- Mission-control plugin pane — build only if supervising several workers still needs manual scanning after the bridge lands.
+- Upstream proposal for custom events / extensible `herdr wait` — would let the CLI go native; drafting it is out of this map unless the bridge work surfaces a crisp API sketch for free.
+
+## Out of scope
+
+- Cross-machine spool forwarding over the tailnet.
+- Automatic renaming of stale workspace/tab labels (nudge-only idea, separate plugin if ever).
+- Per-turn completion notifications.
+- Replacing `herdr-ping-wait` with a native wait (requires upstream herdr changes).

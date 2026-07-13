@@ -1,0 +1,32 @@
+---
+title: "Task: Decide packaging and install path that survives pi updates"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Decide packaging and install path that survives pi updates
+
+You are resolving a grill-master research ticket. Read it first:
+`.brain/projects/grill-master/decide-extension-packaging-install.svx`
+Context (skim Notes + Destination): `.brain/projects/grill-master/pi-turn-ping-map.svx`
+
+## Your job
+
+Answer the ticket's Question with receipts. Sources:
+
+- `~/.pi/agent/extensions/` — inventory what's there (standalone .ts, symlinks into repos, dirs). `ls -la` it.
+- `pi update --help` and the update implementation in `~/Code/joelhooks/pi-mono` (rg for `update` command source, find what `--extensions` manages: which directory, does it overwrite, does it follow/preserve symlinks?)
+- How pi discovers/loads extensions at startup (rg the extension loader in pi-mono: what paths it scans, does it recurse, does it follow symlinks, .ts vs dirs with package.json?)
+- The pi-ds4 local-patch precedent: `rg -i "ds4"` across `~/.brain`, `~/Code/joelhooks/pi-mono` (and check jj/git log + tags in pi-mono for the ff-merge tag pattern mentioned in the ticket)
+- Existing repo-hosted extension precedents: `~/Code/joelhooks/pi-skill-interpolation`, `~/Code/joelhooks/joelclaw/packages/pi-extensions/` — how are they laid out and symlinked?
+
+## Deliver
+
+Write your findings to `.brain/projects/grill-master/assets/packaging-install-findings.md`:
+
+1. **What `pi update` / `pi update --extensions` actually does** to `~/.pi/agent/extensions/` (receipts: file:line in pi-mono source).
+2. **Recommended layout**: where the extension source lives in pi-tools (e.g. `herdr-turn-ping/`), single .ts vs dir, and the exact install step (symlink command). Defend that it survives updates.
+3. **pi-ds4 precedent summary**: does this extension need a patched pi at all? If yes, document the ff-merge tag pattern; if no, one line saying so.
+4. **Fleet story**: minimal install instruction for another machine (flagg) — keep it a README one-liner unless something forces more.
+
+Cite file:line for every claim. Do NOT edit the ticket file, do NOT commit, do NOT touch anything outside `.brain/projects/grill-master/assets/`. Work autonomously. Print `DONE: <one-line summary>` when finished.

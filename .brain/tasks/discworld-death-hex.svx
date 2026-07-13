@@ -1,0 +1,32 @@
+---
+title: "Task: Death delivers crash notices; Hex garnishes error toasts"
+type: "grill-master_asset"
+created_at: "2026-07-12"
+---
+
+# Task: Death delivers crash notices; Hex garnishes error toasts
+
+Repo: `~/Code/joelhooks/herdr-pings`. **You own `bridge/lifecycle.js` and `herdr-turn-ping/index.ts` ONLY.** Sibling workers own `herdr-callsign/` and `actions/`+manifest — do not touch those.
+
+## Feature 1: Death delivers `pane_exited` toasts (bridge/lifecycle.js)
+
+Replace the current "<label> errored / Pane process exited" toast copy with Death speaking in SMALL CAPS (all-caps). Pool of ~8 lines, picked at random, each interpolating the pane's label/callsign. Register: Terry Pratchett's Death — matter-of-fact, kindly, mildly puzzled by humans. Examples to include (write the rest in the same voice):
+
+- `THE PANE BELONGING TO <NAME> HAS ENDED. DO NOT THINK OF IT AS DYING. THINK OF IT AS LEAVING EARLY TO AVOID THE RUSH.`
+- `<NAME>. COME WITH ME.`
+- `THERE IS NO JUSTICE. THERE IS JUST ME. AND ONE FEWER PANE.`
+
+Title stays informative (which pane/callsign); Death's line goes in the toast body (`--body`, respect herdr's limits — keep lines under ~200 chars). `pane_closed` still emits NO toast. All existing safety behavior unchanged (fire-and-forget, socket check, spool write first).
+
+## Feature 2: Hex garnish on `turn_error` toasts (herdr-turn-ping/index.ts)
+
+Prefix the turn_error toast body with a random Hex error string, then the real error head. Pool of ~6 in Hex's actual register:
+
+- `+++ Out Of Cheese Error. Redo From Start +++`
+- `+++ Divide By Cucumber Error. Please Reinstall Universe And Reboot +++`
+- `+++ Melon Melon Melon +++`
+- `+++ Whoops! Here Comes The Cheese! +++`
+
+The REAL error message must remain present and readable after the garnish — the joke never costs the diagnosis. Keep total body reasonable (~200 chars: garnish + error head truncated).
+
+Verify: `bun build --no-bundle` both files. Smoke feature 2 for real: `HERDR_PANE_ID='wV:err9' OPENAI_API_KEY=sk-bad pi --provider openai --model gpt-4o-mini -p hi` → confirm one turn_error spool line and (if you can observe it) the toast. Feature 1 smoke: create a scratch pane running `exec sleep 4243`, kill it, confirm the pane_exited spool line lands; paste what you can. Do NOT commit. Print `DONE: <line pools + smoke receipts>`.

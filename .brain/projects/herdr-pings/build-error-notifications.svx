@@ -1,0 +1,31 @@
+---
+title: "Build restrained error notifications"
+type: "question"
+kind: "task"
+status: "closed"
+interaction: "AFK"
+parent: "./herdr-pings-brief.svx"
+blockers:
+  - "./build-lifecycle-bridge.svx"
+created_at: "2026-07-12"
+assignee: "pi-worker wF:p6 (steered by claude wF:p1)"
+claimed_at: "2026-07-12"
+---
+
+# Build restrained error notifications
+
+## Question
+
+Toast on failures only, via `herdr notification show --sound request`: `turn_error` events and `pane_exited` with nonzero exit. Never on normal `turn_ended` (noise guardrail from the research). Decide the mechanism with the bridge in hand — the bridge hook already handles `pane.exited`; for `turn_error` the cheapest path is the pi extension shelling `herdr notification show` directly when it writes a turn_error line (it already knows `HERDR_SOCKET_PATH` is present). Keep it fire-and-forget and failure-proof: a notification error must never break the worker or the spool write.
+
+Smoke: force a mid-loop 401 (receipt in the predecessor map's verify ticket) → exactly one toast; a normal turn → none.
+
+Resolution: mechanism choice + smoke receipt.
+
+## Resolution (2026-07-12)
+
+Built by pi worker `wF:p6`, reviewed by steering, shipped in herdr-pings (`git log`: "feat: error-only toasts").
+
+- pi extension: on `turn_error` only, after the spool append succeeds inside the serialized write queue, a detached fire-and-forget `herdr notification show "<pane label> errored" --body <error head ≤120ch> --sound request`. Skipped when `HERDR_SOCKET_PATH` absent; a broken herdr binary can't affect the worker or the write. Pane resolution upgraded to also fetch the human label for toast copy.
+- bridge: same call on `pane_exited` (falls back to pane id — herdr's payload lacks the label); `pane_closed` emits nothing.
+- Smoke: forced 401 → one toast + one turn_error; normal turn → zero toasts; killed scratch pane → one toast; deliberate close → zero.

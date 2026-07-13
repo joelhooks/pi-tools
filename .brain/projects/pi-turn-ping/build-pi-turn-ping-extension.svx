@@ -1,0 +1,31 @@
+---
+title: "Build the pi turn-ping extension"
+type: "question"
+kind: "task"
+status: "closed"
+interaction: "AFK"
+parent: "./pi-turn-ping-brief.svx"
+blockers:
+  - "./decide-ping-spool-contract.svx"
+  - "./decide-extension-packaging-install.svx"
+created_at: "2026-07-12"
+assignee: "pi-worker wF:p2 (steered by claude wF:p1)"
+claimed_at: "2026-07-12"
+---
+
+# Build the pi turn-ping extension
+
+## Question
+
+Implement the extension per the locked contract: on the chosen end-of-turn event, append one JSON line to the pane's spool file; on the defined error conditions, append a `turn_error` line. Pane id from `HERDR_PANE_ID` with `herdr pane current` fallback; no-op cleanly when running outside a herdr pane. Include the README install notes (per [Decide packaging and install path](./decide-extension-packaging-install.svx)) and install it into `~/.pi/agent/extensions/`.
+
+Resolution: working extension in pi-tools, installed, with a manual smoke receipt (run pi in a pane, see a line land in the spool).
+
+## Resolution (2026-07-12)
+
+Built by pi worker `wF:p2`, code-reviewed by the steering session. Shipped: `herdr-turn-ping/index.ts` + `README.md` in pi-tools, symlinked at `~/.pi/agent/extensions/herdr-turn-ping` (symlink verified with `ls -ld`).
+
+Implementation matches the contract and event-mapping resolutions: resolves pane id from `HERDR_PANE_ID` then `herdr pane current` (registers nothing without one); caches the final assistant message at `agent_end` and `turnIndex` at `turn_end`; on `agent_settled` appends exactly one line — `turn_error` iff cached `stopReason === "error"` (with `errorMessage` as `error`), else `turn_ended` — with 500-char tail. Appends are awaited and serialized through a promise chain; write failures warn once via pi's notify and never break the worker.
+
+Smoke receipt: `HERDR_PANE_ID='wT:p9' pi -p "say hi"` produced exactly one line in `~/.local/state/herdr-pings/wT-p9.jsonl`:
+`{"event":"turn_ended","pane_id":"wT:p9","timestamp":"2026-07-12T16:33:18.550Z","session":"019f572c-cad8-7ffb-acaf-63dcc85f8c1d","turn_index":0,"last_message_tail":"hi"}`
