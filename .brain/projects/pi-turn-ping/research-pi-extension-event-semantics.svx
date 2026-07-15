@@ -1,6 +1,6 @@
 ---
 title: "Research pi extension event semantics for turn-end and error pings"
-type: "question"
+type: "step"
 kind: "research"
 status: "closed"
 interaction: "AFK"
@@ -13,7 +13,7 @@ claimed_at: "2026-07-12"
 
 # Research pi extension event semantics for turn-end and error pings
 
-## Question
+## Step
 
 Which pi extension events should map to the spool's `turn_ended` and `turn_error` events, and does the pi Joel actually runs expose them the way the local pi-mono checkout does?
 

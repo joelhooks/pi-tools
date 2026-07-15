@@ -1,6 +1,6 @@
 ---
 title: "Build the herdr lifecycle bridge into the spool"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -14,7 +14,7 @@ claimed_at: "2026-07-12"
 
 # Build the herdr lifecycle bridge into the spool
 
-## Question
+## Step
 
 Add `herdr-plugin.toml` to herdr-pings with `[[events]]` hooks on `pane.closed` and `pane.exited` (evaluate `pane.agent_status_changed` — include only if its payload adds real signal) that append normalized records to the affected pane's existing spool file, per the locked contract (required `event`/`pane_id`/`timestamp`; extra fields allowed):
 

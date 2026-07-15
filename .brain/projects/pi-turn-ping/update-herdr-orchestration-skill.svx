@@ -1,6 +1,6 @@
 ---
 title: "Update the herdr-orchestration skill with the ping-based monitoring loop"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -14,7 +14,7 @@ claimed_at: "2026-07-12"
 
 # Update the herdr-orchestration skill with the ping-based monitoring loop
 
-## Question
+## Step
 
 Rewrite the "Monitoring (the steering loop)" section of `~/.claude/skills/herdr-orchestration/SKILL.md` around `herdr-ping-wait` as the primary mechanism for pi workers: the `run_in_background` invocation, harvesting the event JSON (including `last_message_tail`), re-arming for the next turn, and the fallback ladder (`herdr agent wait` / shepherd for non-pi panes and `pane_gone`). Only document what the verification receipt proved — no aspirational behavior.
 

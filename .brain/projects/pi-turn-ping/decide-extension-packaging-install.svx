@@ -1,6 +1,6 @@
 ---
 title: "Decide packaging and install path that survives pi updates"
-type: "question"
+type: "step"
 kind: "research"
 status: "closed"
 interaction: "AFK"
@@ -13,7 +13,7 @@ claimed_at: "2026-07-12"
 
 # Decide packaging and install path that survives pi updates
 
-## Question
+## Step
 
 Where does the extension's source live and how is it installed so `pi update` never clobbers it?
 

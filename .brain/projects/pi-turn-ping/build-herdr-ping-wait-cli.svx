@@ -1,6 +1,6 @@
 ---
 title: "Build the herdr-ping-wait CLI"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -14,7 +14,7 @@ claimed_at: "2026-07-12"
 
 # Build the herdr-ping-wait CLI
 
-## Question
+## Step
 
 Implement `herdr-ping-wait <pane...> [--timeout N]` per the locked contract: block until a *new* line appears in any watched spool (fs-events or 1s offset poll), print the event JSON to stdout, exit 0; nonzero on timeout. Track consumed offsets in the cursor file so already-seen events never re-fire — including across orchestrator restarts and when events arrived while nothing was waiting. Handle spool files that don't exist yet (worker not started) and multiple events arriving between polls (deliver the first new one; the rest stay unconsumed for the next wait).
 

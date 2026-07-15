@@ -1,6 +1,6 @@
 ---
 title: "Build the doctor and setup plugin actions"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -14,7 +14,7 @@ claimed_at: "2026-07-12"
 
 # Build the doctor and setup plugin actions
 
-## Question
+## Step
 
 Two `[[actions]]` in the herdr-pings manifest:
 

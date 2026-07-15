@@ -1,6 +1,6 @@
 ---
 title: "Verify herdr-pings as an installed plugin, end to end"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "HITL"
@@ -14,7 +14,7 @@ created_at: "2026-07-12"
 
 # Verify herdr-pings as an installed plugin, end to end
 
-## Question
+## Step
 
 With Joel watching: install from GitHub proper (`herdr plugin uninstall`/`unlink` the dev link first, then `herdr plugin install joelhooks/herdr-pings`), run `setup` and `doctor`, then drive the full loop:
 

@@ -1,6 +1,6 @@
 ---
 title: "Lock the ping spool contract"
-type: "question"
+type: "step"
 kind: "grilling"
 status: "closed"
 interaction: "HITL"
@@ -12,7 +12,7 @@ created_at: "2026-07-12"
 
 # Lock the ping spool contract
 
-## Question
+## Step
 
 What exactly is the interface between the extension (writer) and `herdr-ping-wait` (reader)? This is the seam both build tickets depend on, so it gets locked once, with Joel in the loop.
 

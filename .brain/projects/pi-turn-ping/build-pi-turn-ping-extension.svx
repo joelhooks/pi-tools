@@ -1,6 +1,6 @@
 ---
 title: "Build the pi turn-ping extension"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -15,7 +15,7 @@ claimed_at: "2026-07-12"
 
 # Build the pi turn-ping extension
 
-## Question
+## Step
 
 Implement the extension per the locked contract: on the chosen end-of-turn event, append one JSON line to the pane's spool file; on the defined error conditions, append a `turn_error` line. Pane id from `HERDR_PANE_ID` with `herdr pane current` fallback; no-op cleanly when running outside a herdr pane. Include the README install notes (per [Decide packaging and install path](./decide-extension-packaging-install.svx)) and install it into `~/.pi/agent/extensions/`.
 

@@ -1,6 +1,6 @@
 ---
 title: "Verify the wake loop end to end against a live worker"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "HITL"
@@ -15,7 +15,7 @@ claimed_at: "2026-07-12"
 
 # Verify the wake loop end to end against a live worker
 
-## Question
+## Step
 
 Drive the real loop the way a supervising Claude session will: spawn a pi worker in a herdr pane, run `herdr-ping-wait` via Bash `run_in_background`, send the worker a prompt, and confirm the orchestrator wakes exactly once when the turn ends — then again for a second turn, with no duplicate or stale fires (the two failure modes shepherd has today). Exercise the error path (kill the provider request or force a stream error) and confirm `turn_error` wakes the waiter. Confirm the shepherd fallback boundary: pane death (`pane_gone`) is still shepherd's job — document the split.
 

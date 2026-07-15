@@ -1,6 +1,6 @@
 ---
 title: "Create the herdr-pings repo and extract the wake loop into it"
-type: "question"
+type: "step"
 kind: "task"
 status: "closed"
 interaction: "AFK"
@@ -13,7 +13,7 @@ claimed_at: "2026-07-12"
 
 # Create the herdr-pings repo and extract the wake loop into it
 
-## Question
+## Step
 
 Stand up public repo `joelhooks/herdr-pings` and move the wake loop there cleanly:
 
