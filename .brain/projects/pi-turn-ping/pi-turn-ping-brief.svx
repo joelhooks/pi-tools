@@ -46,7 +46,7 @@ A supervising Claude Code session orchestrating pi workers in herdr panes gets w
 
 - [Herdr plugin expansion ideas](./herdr-plugin-expansion-ideas.svx) — researched growing the wake loop into a herdr plugin. Verdict: hybrid — plugin as host/distribution shell (lifecycle events into the same spool, retiring shepherd; installable packaging with doctor action; restrained error notifications), pi extension stays authoritative for turn semantics. A new effort if pursued, not a reopening of this map.
 
-## Not yet specified
+## Latent
 
 - Cursor semantics when more than one supervising session consumes the same spool — per-consumer cursor files, or one orchestrator per pane by convention? Revisit when verification shows how the loop is actually driven.
 - Spool hygiene over weeks of use (rotation, GC of dead-pane files) — wait until real usage shows volume.
