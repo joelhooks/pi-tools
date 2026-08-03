@@ -17,6 +17,12 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function asRecord(value: unknown): Record<string, any> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any>
+    : undefined;
+}
+
 export function normalizeSecretsOutput(output: string, commandSucceeded: boolean): SecretsResult {
   const trimmed = output.trim();
 
@@ -101,7 +107,8 @@ export default function (pi: ExtensionAPI) {
     async execute() {
       const result = secrets("status");
       if (!result.success) return text(`Daemon not running: ${JSON.stringify(result.data)}`);
-      const d = result.data;
+      const d = asRecord(result.data);
+      if (!d) return text("Invalid daemon status response.");
       const lines = [
         `🛡️ agent-secrets daemon`,
         `Running: ${d.running}`,
