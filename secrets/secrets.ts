@@ -11,18 +11,57 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { execSync } from "node:child_process";
 
-function secrets(cmd: string): { success: boolean; data: any } {
+type SecretsResult = { success: boolean; data: unknown };
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+export function normalizeSecretsOutput(output: string, commandSucceeded: boolean): SecretsResult {
+  const trimmed = output.trim();
+
   try {
-    const out = execSync(`secrets ${cmd}`, { encoding: "utf-8", timeout: 10000 }).trim();
-    try { return JSON.parse(out); } catch { return { success: true, data: out }; }
-  } catch (e: any) {
-    const out = (e.stdout || e.stderr || e.message || "").trim();
-    try { return JSON.parse(out); } catch { return { success: false, data: out }; }
+    const parsed: unknown = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const envelope = parsed as Record<string, unknown>;
+      const success = typeof envelope.success === "boolean"
+        ? envelope.success
+        : typeof envelope.ok === "boolean"
+          ? envelope.ok
+          : commandSucceeded;
+      const data = hasOwn(envelope, "result")
+        ? envelope.result
+        : hasOwn(envelope, "data")
+          ? envelope.data
+          : parsed;
+      return { success, data };
+    }
+
+    return { success: commandSucceeded, data: parsed };
+  } catch {
+    return { success: commandSucceeded, data: trimmed };
   }
 }
 
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }], details: {} };
+function secrets(cmd: string): SecretsResult {
+  try {
+    const out = execSync(`secrets ${cmd}`, { encoding: "utf-8", timeout: 10000 });
+    return normalizeSecretsOutput(out, true);
+  } catch (e: any) {
+    const out = String(e.stdout || e.stderr || e.message || "");
+    return normalizeSecretsOutput(out, false);
+  }
+}
+
+export function toolText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "No data returned.";
+  const serialized = JSON.stringify(value, null, 2);
+  return serialized ?? String(value);
+}
+
+function text(value: unknown) {
+  return { content: [{ type: "text" as const, text: toolText(value) }], details: {} };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -108,7 +147,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params) {
       const n = params.tail || 20;
       const result = secrets(`audit --tail ${n}`);
-      return text(typeof result.data === "string" ? result.data : JSON.stringify(result.data, null, 2));
+      return text(result.data);
     },
   });
 
