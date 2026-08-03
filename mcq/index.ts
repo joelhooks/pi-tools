@@ -124,6 +124,11 @@ function progressBar(current: number, total: number, width: number, fg: (c: any,
 	return fg("accent", "█".repeat(filled)) + fg("dim", "░".repeat(Math.max(0, w - filled)));
 }
 
+export function fitRenderedLines(lines: string[], rawWidth: number): string[] {
+	const width = Math.max(1, rawWidth);
+	return lines.map((line) => truncateToWidth(line, width));
+}
+
 // ── Extension ────────────────────────────────────────────────────────
 
 export default function mcq(pi: ExtensionAPI) {
@@ -459,18 +464,20 @@ export default function mcq(pi: ExtensionAPI) {
 
 				// ── Render ──
 				function render(rawWidth: number): string[] {
-					const width = Math.max(20, rawWidth);
+					const width = Math.max(1, rawWidth);
 					if (cachedLines && cachedWidth === width) return cachedLines;
 					cachedWidth = width;
 					const layout = getTUILayout(width);
 
+					let rendered: string[];
 					if (layout === "minimal") {
-						cachedLines = renderMinimal(width);
+						rendered = renderMinimal(width);
 					} else if (layout === "compact") {
-						cachedLines = renderCompact(width);
+						rendered = renderCompact(width);
 					} else {
-						cachedLines = renderFull(width);
+						rendered = renderFull(width);
 					}
+					cachedLines = fitRenderedLines(rendered, width);
 					return cachedLines;
 				}
 
@@ -516,7 +523,7 @@ export default function mcq(pi: ExtensionAPI) {
 							: isHl ? theme.fg("accent", "▸")
 							: isRec ? theme.fg("warning", "★")
 							: " ";
-						const optWrapped = wrapTextWithAnsi(q.options[i], width - 4);
+						const optWrapped = wrapTextWithAnsi(q.options[i], Math.max(1, width - 4));
 						for (let j = 0; j < optWrapped.length; j++) {
 							add(j === 0 ? `${mark}${num} ${optWrapped[j]}` : `   ${optWrapped[j]}`);
 						}
@@ -532,15 +539,13 @@ export default function mcq(pi: ExtensionAPI) {
 					}
 
 					if (inputMode) {
-						for (const line of editor.render(width - 1)) add(` ${line}`);
+						for (const line of editor.render(Math.max(1, width - 1))) add(` ${line}`);
 					}
 
 					// Truncated rec reason — one line max
 					if (q.recommended && q.recommendedReason && !inputMode) {
-						const maxLen = width - 3;
-						const reason = q.recommendedReason.length > maxLen
-							? q.recommendedReason.slice(0, maxLen - 3) + "..."
-							: q.recommendedReason;
+						const maxLen = Math.max(1, width - 3);
+						const reason = truncateToWidth(q.recommendedReason, maxLen);
 						add(theme.fg("dim", `💡${reason}`));
 					}
 
