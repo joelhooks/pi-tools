@@ -1,6 +1,7 @@
 ---
 name: shortlink-qr
 description: Create joel.dev shortlinks and QR assets. Use when Joel asks for a QR code, stage/demo shortlink, joel.dev redirect, link label that looks good in phone camera UI, or a copyable QR asset.
+disable-model-invocation: true
 ---
 
 # shortlink-qr
