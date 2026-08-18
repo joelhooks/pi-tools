@@ -1,0 +1,89 @@
+---
+title: Session Reader Effect and XState Architecture
+kind: Area
+status: active
+updated: 2026-08-18
+---
+
+# Session Reader Effect and XState Architecture
+
+## Decision
+
+`session-reader` is a local application, not a synchronous wrapper around `joelclaw session`.
+
+- Effect v4 owns filesystem reads, transcript parsing, typed errors, process adapters, interruption, and resource bounds.
+- XState v5 owns operation lifecycle and cancellation.
+- Pi tool names remain stable for compatibility.
+- Local transcript files are the evidence source.
+- `joelclaw` is an optional index adapter for cross-machine and Typesense requests.
+- Tool text and stored details are bounded before Pi receives them.
+
+Pinned versions:
+
+- `effect@4.0.0-beta.99`
+- `xstate@5.32.5`
+- `typescript@7.0.2`
+- `@types/node@24.13.3`
+
+## State machine
+
+Each tool request creates one actor.
+
+```txt
+dispatching
+  ├─ Search  → searching
+  ├─ Inspect → inspecting
+  ├─ Extract → extracting
+  ├─ Chunks  → chunking
+  └─ Capture → checkingCapture
+
+running mode → succeeded | failed | cancelled
+```
+
+Leaving a running mode stops its promise actor. XState aborts the promise signal. Effect receives the same signal through `Effect.runPromise(program, { signal })`.
+
+## Module boundaries
+
+- `session-reader/domain.ts`: canonical Effect Schemas, redaction, parsing, inspect, and extraction.
+- `session-reader/session-store.ts`: Effect service for streaming local files, search, resolution, and bounded capture tails.
+- `session-reader/joelclaw-index.ts`: bounded Effect adapter for optional remote index calls.
+- `session-reader/engine.ts`: operation algebra and Effect workflows.
+- `session-reader/machine.ts`: XState lifecycle and cancellation.
+- `session-reader/presenter.ts`: bounded text and compact tool details.
+- `session-reader/session-reader.ts`: Pi tool registration only.
+
+## Schema contract
+
+Effect Schemas are the core domain contract, not decoration.
+
+- `SessionOperationSchema` is the tagged union accepted by the XState actor.
+- `TranscriptSchema`, `EvidenceSchema`, `InspectResultSchema`, `ExtractionSchema`, and `LocalSessionHitSchema` define internal data.
+- JSONL objects are decoded as string-keyed unknown records before transcript flattening.
+- `JoelclawEnvelopeSchema` decodes the optional remote adapter boundary.
+- `ToolPayloadSchema` validates the final value before Pi receives it.
+- Schema failures map into `SessionReaderError`; malformed data does not leak as anonymous defects.
+
+## Failure that forced the change
+
+The old `session_inspect` path asked `joelclaw` for eight overlapping 91-line windows. A 3 MB transcript produced:
+
+- 418,958 characters in tool content
+- 371,272 characters in stored JSON details
+- about 790 KB passed through one Pi tool result
+
+The local actor smoke test on the same transcript produced:
+
+- 23,799 characters in tool content
+- 1,007 characters in stored details
+- 64–85 ms across repeated smoke runs
+- lifecycle snapshots `inspecting → succeeded`
+
+## Verification
+
+```sh
+npm run typecheck
+npm run test:session-reader
+node /tmp/session-reader-smoke.ts
+```
+
+The focused test suite covers schema decoding, keyed secret redaction, local parsing, overlapping-window deduplication, extraction, success, invalid-regex failure, cancellation, and public tool registration.

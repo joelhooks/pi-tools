@@ -1,7 +1,7 @@
 {
   "name": "pi-tools",
   "version": "0.4.0",
-  "description": "Joel's pi extensions, repo autopsy, joelclaw session wrappers, skill shortcuts, MCQ, MCP bridge, web search, url-to-markdown, excalidraw, linear-tracker, shortlink QR",
+  "description": "Joel's pi extensions, Effect/XState session reader, repo autopsy, skill shortcuts, MCQ, MCP bridge, web search, url-to-markdown, excalidraw, linear-tracker, shortlink QR",
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -11,9 +11,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@sinclair/typebox": "^0.34.33",
+    "effect": "4.0.0-beta.99",
     "ioredis": "^5.6.1",
     "langfuse": "^3.38.6",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "xstate": "5.32.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "~0.74.0",
@@ -43,6 +45,12 @@
     ]
   },
   "scripts": {
-    "brain:check": "pi-notes brain check"
+    "brain:check": "pi-notes brain check",
+    "test:session-reader": "node --test session-reader/session-reader.test.ts",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
   }
 }
