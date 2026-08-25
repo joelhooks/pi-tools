@@ -4,6 +4,8 @@ export const SessionAgentSchema = Schema.Union([
   Schema.Literal("pi"),
   Schema.Literal("claude"),
   Schema.Literal("codex"),
+  Schema.Literal("cursor"),
+  Schema.Literal("grok"),
 ]);
 export type SessionAgent = typeof SessionAgentSchema.Type;
 
@@ -220,6 +222,24 @@ function roleOf(raw: unknown, text: string): string | undefined {
         : undefined;
     const role = asString(record.role) ?? asString(message?.role);
     if (role) return role;
+
+    switch (asString(record.type)) {
+      case "user":
+      case "user_message":
+        return "user";
+      case "assistant":
+      case "agent_message":
+      case "reasoning":
+        return "assistant";
+      case "tool":
+      case "tool_result":
+      case "backend_tool_call":
+      case "function_call":
+      case "function_call_output":
+      case "custom_tool_call":
+      case "custom_tool_call_output":
+        return "tool";
+    }
   }
   if (/\buser\b/iu.test(text)) return "user";
   if (/\bassistant\b/iu.test(text)) return "assistant";
@@ -237,8 +257,15 @@ function kindOf(raw: unknown, text: string): string | undefined {
 }
 
 export function sessionMetaFromPath(path: string): SessionMeta {
-  const base = path.split("/").pop() ?? path;
+  const parts = path.split("/");
+  const base = parts.at(-1) ?? path;
   const stem = base.endsWith(".jsonl") ? base.slice(0, -6) : base;
+
+  const cursorRoot = parts.lastIndexOf("acp-sessions");
+  if (cursorRoot >= 0 && parts[cursorRoot + 1]) {
+    return { sessionId: parts[cursorRoot + 1] };
+  }
+
   if (path.includes("/.codex/sessions/") && stem.startsWith("rollout-")) {
     const match = stem.match(/^rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)$/u);
     if (match) {
@@ -248,6 +275,18 @@ export function sessionMetaFromPath(path: string): SessionMeta {
         cwdKey: path.split("/").at(-2),
       };
     }
+  }
+
+  const grokRoot = parts.lastIndexOf("sessions");
+  if (grokRoot >= 0 && parts[grokRoot + 2]) {
+    const encodedCwd = parts[grokRoot + 1];
+    let cwdKey = encodedCwd;
+    try {
+      cwdKey = decodeURIComponent(encodedCwd ?? "");
+    } catch {
+      // Keep the encoded path as a stable fallback.
+    }
+    return { sessionId: parts[grokRoot + 2], cwdKey };
   }
 
   const underscore = stem.lastIndexOf("_");

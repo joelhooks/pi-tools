@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "archiveId": "codex-central-plugin-20260825",
+  "owner": "pi-tools compatibility surface",
+  "approval": "user-authorized archive migration",
+  "privacy": "metadata-only; no payload bodies inspected",
+  "rows": [
+    {
+      "original": "joelclaw-session-capture/.codex-plugin/plugin.json",
+      "classification": "private-archive",
+      "destination": "private-operator-archive",
+      "bytes": 508,
+      "sha256": "713db3446223534d2f5d68f6f461e4f1e6831021872f89917adc5a52af9d7831",
+      "replacement": "single-owner joelclaw flowing-memory host hook",
+      "moveStatus": "moved-private",
+      "rollbackGate": "fresh Codex canary before legacy artifact movement"
+    },
+    {
+      "original": "joelclaw-session-capture/scripts/capture-codex-session.js",
+      "classification": "private-archive",
+      "destination": "private-operator-archive",
+      "bytes": 6649,
+      "sha256": "5b990c66c085bfcaf270bf6027c7520c3f82cd35d80fba906ecb4b3a004b590b",
+      "replacement": "single-owner joelclaw flowing-memory host hook",
+      "moveStatus": "moved-private",
+      "rollbackGate": "fresh Codex canary before legacy artifact movement"
+    },
+    {
+      "original": "joelclaw-session-capture/scripts/install-hook.js",
+      "classification": "private-archive",
+      "destination": "private-operator-archive",
+      "bytes": 1513,
+      "sha256": "ba601cde3b9a216f573118c46915fd46de1437a7983d223c46e2958b4fae0d65",
+      "replacement": "single-owner joelclaw flowing-memory host hook",
+      "moveStatus": "moved-private",
+      "rollbackGate": "fresh Codex canary before legacy artifact movement"
+    },
+    {
+      "original": ".brain/codex-session-capture-plugin-strategy.svx",
+      "classification": "redacted-public-pointer",
+      "destination": "private-operator-archive",
+      "bytes": 6237,
+      "sha256": "80833b853dc15ba6405dabc178a0a7c312594d21b743454c1cd0ba8b64573e0e",
+      "replacement": "redacted historical Brain pointer",
+      "moveStatus": "copied-private-and-redacted-public",
+      "rollbackGate": "none; historical evidence only"
+    },
+    {
+      "original": "skills/session-search/SKILL.md",
+      "classification": "redacted-public-pointer",
+      "destination": "private-operator-archive",
+      "bytes": 3230,
+      "sha256": "196ab93170c45391061208b16654395081fd9d968a46ddd768aa15187636ad35",
+      "replacement": "current scrubbed session-search skill",
+      "moveStatus": "copied-private-and-redacted-public",
+      "rollbackGate": "none; historical instruction only"
+    }
+  ]
+}

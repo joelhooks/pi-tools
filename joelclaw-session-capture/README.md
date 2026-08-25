@@ -1,66 +1,17 @@
-# JoelClaw Session Capture for Codex
+# Retired Codex Central capture plugin
 
-Codex Stop-hook capture for JoelClaw `/api/runs`.
+This package is a compatibility and archive surface for the retired Codex Stop-hook that posted transcript deltas directly to Central.
 
-This promotes the local hook script into a versioned plugin shape so Codex capture is installable, reviewable, and doctorable instead of living as a mystery file in `~/.local/bin`.
+It is **not** the current capture owner and must not be installed. Current Codex capture belongs to the same `joelclaw` flowing-memory host release family used by the other runtime adapters. Until that hook is installed and canaried, operators must report Codex capture as unavailable rather than activating this second path.
 
-## What it captures
+## Preserved evidence
 
-- Runtime: `codex`
-- Source: Codex hook stdin fields including `session_id`, `transcript_path`, `cwd`, `model`, and `turn_id`
-- Payload: only the transcript delta since the last successful Central POST
-- State: `~/.joelclaw/codex-session-state.json`
-- Log: `~/.joelclaw/codex-capture.log`
-- Failed posts: `~/.joelclaw/outbox/*.json`
+The old writer, installer, and plugin manifest were moved to a private operator archive with a metadata-only hash manifest. They are not published from this repository and must not be executed against live configuration.
 
-## Safety contract
-
-The hook must never break Codex:
-
-- exits `0`
-- emits valid JSON with `{ "continue": true, "suppressOutput": true }`
-- never prints secrets
-- writes failed payloads to the outbox
-- advances byte offsets only after Central accepts the run
-
-## Install/update the hook
-
-```bash
-node joelclaw-session-capture/scripts/install-hook.js
-```
-
-Default Central URL is the stable Tailscale name:
-
-```txt
-http://panda.tail7af24.ts.net:3000
-```
-
-Override with `JOELCLAW_CENTRAL_URL` if needed.
-
-## Doctor
+The non-mutating doctor remains at:
 
 ```bash
 node joelclaw-session-capture/scripts/doctor-codex-session-capture.js
 ```
 
-Checks:
-
-- `~/.codex/hooks.json` has the Stop hook
-- existing cmux hooks are preserved
-- latest Codex transcript exists
-- state/log freshness
-- outbox count
-- Central connectivity
-- `joelclaw session search --source local` can return a Codex transcript path
-
-## Known gap
-
-Capture can be healthy while `joelclaw session search` is still Pi-biased. The CLI local search must scan all local transcript roots:
-
-```txt
-~/.pi/agent/sessions/**/*.jsonl
-~/.claude/projects/**/*.jsonl
-~/.codex/sessions/**/*.jsonl
-```
-
-Until that lands in JoelClaw proper, use the Pi `session_search` tool in this repo for pointer search plus local Pi/Claude/Codex detail scan.
+Its output describes **legacy Central capture diagnostics**, not current flowing-memory delivery or native transcript adapter health. Native transcripts remain immutable evidence and are read through the Effect/XState session reader.

@@ -2,7 +2,8 @@ import { Schema } from "effect";
 import type { Evidence, Extraction, InspectResult, LocalSessionHit } from "./domain.ts";
 import { compactText } from "./domain.ts";
 import type { JoelclawResult } from "./joelclaw-index.ts";
-import type { CaptureFileStatus } from "./session-store.ts";
+import type { CaptureFileStatus, CaptureHealth } from "./capture-paths.ts";
+import type { AdapterHealth } from "./adapters.ts";
 
 export const MAX_TOOL_TEXT_CHARS = 24_000;
 const ENTRY_PREVIEW_CHARS = 360;
@@ -137,11 +138,49 @@ export function renderLocalHits(hits: readonly LocalSessionHit[]): string {
 }
 
 export function renderCaptureState(files: readonly CaptureFileStatus[]): string {
-  return files
-    .map((file) => {
-      if (!file.present) return `- ${file.label}: missing (${file.path})`;
-      return `- ${file.label}: present, modified ${file.modified ?? "unknown"} (${file.path})${file.tail ? `\n  ${file.tail}` : ""}`;
-    })
+  const canonical = files.filter((file) => file.namespace === "canonical");
+  const legacy = files.filter((file) => file.namespace === "legacy");
+  const render = (file: CaptureFileStatus): string => {
+    if (!file.present) return `- ${file.label}: missing (${file.path})`;
+    const pending = file.pendingCount === undefined ? "" : `, pending=${file.pendingCount}`;
+    return `- ${file.label}: present${pending}, modified ${file.modified ?? "unknown"} (${file.path})${file.tail ? `\n  ${file.tail}` : ""}`;
+  };
+  return [
+    "## Canonical namespace",
+    ...canonical.map(render),
+    "",
+    "## Legacy / ambiguous files",
+    ...legacy.map(render),
+  ].join("\n");
+}
+
+/**
+ * Render the capture health verdict. Missing namespaces are never "ok".
+ *
+ * @param health - Aggregated runtime and Central classification
+ */
+export function renderCaptureHealth(health: CaptureHealth): string {
+  const runtimeLines = health.runtimes.map((runtime) => {
+    const pending = runtime.pendingCount > 0 ? `, pending=${runtime.pendingCount}` : "";
+    const legacy = runtime.legacyPresent ? ", legacy files present" : "";
+    return `- ${runtime.runtime}: ${runtime.status}${pending}${legacy}`;
+  });
+  const central =
+    health.central.status === "configured"
+      ? `configured (${health.central.source ?? "unknown source"})`
+      : `${health.central.status}${health.central.reason ? ` — ${health.central.reason}` : ""}`;
+  return [
+    `Current flowing capture: ${health.currentCapture} (machine ${health.machineId})`,
+    "This reader verifies native transcript readability but has no collector-receipt adapter.",
+    `Legacy Central diagnostics: ${health.legacyCentralOk ? "clear" : "degraded"}`,
+    `Legacy Central configuration: ${central}`,
+    ...runtimeLines,
+  ].join("\n");
+}
+
+export function renderAdapterHealth(adapters: readonly AdapterHealth[]): string {
+  return adapters
+    .map((adapter) => `- ${adapter.runtime}: ${adapter.status} — ${adapter.detail} (${adapter.root})`)
     .join("\n");
 }
 

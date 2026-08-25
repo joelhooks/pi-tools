@@ -21,6 +21,8 @@ const SessionAgentSchema = Type.Union([
   Type.Literal("pi"),
   Type.Literal("claude"),
   Type.Literal("codex"),
+  Type.Literal("cursor"),
+  Type.Literal("grok"),
 ]);
 const SessionAgentFilterSchema = Type.Union([Type.Literal("all"), SessionAgentSchema]);
 const SessionSourceSchema = Type.Union([
@@ -161,7 +163,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
     name: "session_search",
     label: "Session Search",
     description:
-      "Search local Pi, Claude, and Codex transcripts through the Effect/XState session reader. Joelclaw is used only as an optional remote index adapter.",
+      "Search local Pi, Claude, Codex, Cursor, and Grok transcripts through the Effect/XState session reader. Joelclaw is used only as an optional remote index adapter.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       agent: Type.Optional(SessionAgentFilterSchema),
@@ -215,7 +217,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
     name: "session_capture_status",
     label: "Session Capture Status",
     description:
-      "Check local Pi, Claude, and Codex capture files through the Effect/XState session reader.",
+      "Check native Pi, Claude, Codex, Cursor, and Grok transcript adapters plus legacy Pi/Claude/Codex capture diagnostics through the Effect/XState session reader.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal, onUpdate, ctx) {
       return executeOperation(SessionOperation.Capture({ cwd: ctx.cwd }), signal, onUpdate);

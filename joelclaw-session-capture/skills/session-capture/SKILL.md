@@ -1,45 +1,22 @@
 ---
 name: session-capture
-description: Install, verify, and debug JoelClaw Codex session capture hooks and compare Codex/Claude/Pi capture health.
+description: Historical pointer for the retired Codex-to-Central capture plugin. Use only to inspect legacy state during migration; current capture belongs to the joelclaw flowing-memory host adapter.
 ---
 
-# Session Capture
+# Retired Codex Central capture
 
-Use when capture health matters. Do not claim sessions are in JoelClaw unless the state/log files and search path prove it.
+Do not install or reactivate this plugin. Its writer, installer, and manifest are preserved in a private operator archive with metadata-only hash receipts; they are not published from this repository.
 
-## Codex
+Current rules:
 
-- Hook config: `~/.codex/hooks.json`
-- Script: `joelclaw-session-capture/scripts/capture-codex-session.js`
-- State: `~/.joelclaw/codex-session-state.json`
-- Log: `~/.joelclaw/codex-capture.log`
-- Transcript root: `~/.codex/sessions/**/*.jsonl`
+- Native Codex transcripts remain immutable evidence.
+- The Effect/XState session reader owns local transcript discovery, not capture transport.
+- Current semantic capture must use the single-owner `joelclaw` flowing-memory host release.
+- If that hook is absent or unproved, report typed unavailability.
+- Never advance offsets, replay an outbox, or move legacy files merely to make a doctor green.
 
-Doctor:
+The remaining doctor is read-only legacy diagnostics:
 
 ```bash
 node joelclaw-session-capture/scripts/doctor-codex-session-capture.js
 ```
-
-## Claude
-
-- Hook config: `~/.claude/settings.json`
-- Script: `~/.bun/bin/joelclaw-capture-session`
-- Expected state/log if verified:
-  - `~/.joelclaw/claude-session-state.json`
-  - `~/.joelclaw/claude-capture.log`
-- Transcript root: `~/.claude/projects/**/*.jsonl`
-
-Current risk: the historical Claude hook writes generic `session-state.json` / `capture.log` and uses runtime `claude-code`, so it can look like Pi capture unless the capture script is namespaced.
-
-## Pi
-
-- State: `~/.joelclaw/session-state.json`
-- Log: `~/.joelclaw/capture.log`
-- Transcript root: `~/.pi/agent/sessions/**/*.jsonl`
-
-## Search model
-
-1. Ask `joelclaw session search` first for indexed/cross-machine pointers.
-2. Then inspect local transcript roots for exact receipts.
-3. Verify capture health before saying a runtime is indexed.

@@ -10,11 +10,17 @@ import {
   inspectTranscript,
   parseTranscript,
   redactSecrets,
+  sessionMetaFromPath,
   redactUnknown,
 } from "./domain.ts";
 import { SessionOperation, SessionOperationSchema } from "./engine.ts";
 import { runSessionActor } from "./machine.ts";
-import { inspectDetails, renderInspect } from "./presenter.ts";
+import { inspectDetails, renderCaptureHealth, renderInspect } from "./presenter.ts";
+import {
+  assessCaptureHealth,
+  type CaptureFileStatus,
+  capturePathSpecs,
+} from "./capture-paths.ts";
 import sessionReader from "./session-reader.ts";
 
 const temporaryDirectories: string[] = [];
@@ -94,6 +100,20 @@ describe("session reader domain", () => {
     assert.ok(extraction.verification.length > 0);
     assert.deepEqual(extraction.filesTouched, ["/tmp/example.ts"]);
   });
+
+  test("does not mistake nested Codex date directories for Grok metadata", () => {
+    const codex = sessionMetaFromPath(
+      "/home/example/.codex/sessions/2026/08/18/rollout-2026-08-18T13-04-13-01a01679-7588-7981-9dd0-ee2b1faab24f.jsonl",
+    );
+    assert.equal(codex.sessionId, "01a01679-7588-7981-9dd0-ee2b1faab24f");
+    assert.equal(codex.startedAt, "2026-08-18T13:04:13Z");
+
+    const grok = sessionMetaFromPath(
+      "/home/example/.grok/sessions/%2Fhome%2Fexample/01a01a5f-da6c-7fa2-8539-db2be9e6a08b/chat_history.jsonl",
+    );
+    assert.equal(grok.sessionId, "01a01a5f-da6c-7fa2-8539-db2be9e6a08b");
+    assert.equal(grok.cwdKey, "/home/example");
+  });
 });
 
 describe("session reader actor", () => {
@@ -159,4 +179,22 @@ test("registers the compatibility tool surface", () => {
     "session_chunks",
     "session_tasks",
   ]);
+});
+
+test("capture status renderer keeps current flowing delivery unproven", () => {
+  const files: CaptureFileStatus[] = capturePathSpecs("/tmp/home", "test-machine").map((spec) => ({
+    ...spec,
+    present: spec.namespace === "legacy" && spec.runtime === "codex",
+    pendingCount: spec.kind === "outbox" ? 0 : undefined,
+  }));
+  const health = assessCaptureHealth({
+    machineId: "test-machine",
+    files,
+    central: { status: "stale", reason: "retired" },
+  });
+  const rendered = renderCaptureHealth(health);
+  assert.match(rendered, /Current flowing capture: unproven/);
+  assert.match(rendered, /Legacy Central diagnostics: degraded/);
+  assert.match(rendered, /codex: legacy-only/);
+  assert.match(rendered, /Legacy Central configuration: stale/);
 });

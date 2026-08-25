@@ -47,22 +47,15 @@ joelclaw status
 ls -l ~/.joelclaw/*capture.log ~/.joelclaw/*session-state.json 2>/dev/null
 ```
 
-Expected files:
+Current runtime capture belongs to the single-owner `joelclaw` flowing-memory host adapter. Native transcript readability is evidence availability, not proof of semantic admission. Flat state/log/outbox files are runtime-ambiguous legacy Central artifacts.
 
-- Pi: `~/.joelclaw/session-state.json`, `~/.joelclaw/capture.log`
-- Codex: `~/.joelclaw/codex-session-state.json`, `~/.joelclaw/codex-capture.log`
-- Claude: `~/.joelclaw/claude-session-state.json`, `~/.joelclaw/claude-capture.log`
-
-If Claude/Codex/Pi transcript files exist but matching JoelClaw state/log files are missing or stale, say capture is not verified. Do not launder that into “available in JoelClaw.”
-
-For Codex capture specifically, run the repo-local doctor when available:
+For Codex legacy diagnostics only, run the non-mutating repo-local doctor:
 
 ```bash
-JOELCLAW_CENTRAL_URL=http://panda.tail7af24.ts.net:3000 \
-  node joelclaw-session-capture/scripts/doctor-codex-session-capture.js
+node joelclaw-session-capture/scripts/doctor-codex-session-capture.js
 ```
 
-The doctor must parse actual `joelclaw session search` hit paths. A search output that only mentions a Codex path inside a Pi transcript is not a Codex search hit.
+The doctor intentionally reports current Codex flowing capture as unproven. Do not install the archived Central-posting plugin or treat stale canonical files as liveness proof.
 
 Codex-only smoke:
 

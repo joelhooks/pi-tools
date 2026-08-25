@@ -1,4 +1,7 @@
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { Effect, Schema } from "effect";
+import { assessCaptureHealth, resolveCentralUrl } from "./capture-paths.ts";
 import {
   extractTranscript,
   inspectTranscript,
@@ -13,6 +16,8 @@ import {
   inspectDetails,
   MAX_TOOL_TEXT_CHARS,
   remoteDetails,
+  renderAdapterHealth,
+  renderCaptureHealth,
   renderCaptureState,
   renderExtraction,
   renderInspect,
@@ -75,6 +80,8 @@ export const SessionOperationSchema = Schema.TaggedUnion({
       Schema.Literal("pi"),
       Schema.Literal("claude"),
       Schema.Literal("codex"),
+      Schema.Literal("cursor"),
+      Schema.Literal("grok"),
     ]),
     source: Schema.Union([
       Schema.Literal("typesense"),
@@ -398,12 +405,35 @@ const runCapture = Effect.fn("SessionEngine.capture")(function* (input: CaptureI
   const store = yield* SessionStore;
   const index = yield* JoelclawIndex;
   const files = yield* store.captureState;
+  const adapters = yield* store.adapterHealth;
+  const machineId =
+    files
+      .find((file) => file.namespace === "canonical")
+      ?.path.split("/.joelclaw/capture/")[1]
+      ?.split("/")[0] ?? "unknown-machine";
+  const systemBusText = yield* Effect.promise(() =>
+    readFile(`${homedir()}/.config/system-bus.env`, "utf8").catch(() => ""),
+  );
+  const health = assessCaptureHealth({
+    machineId,
+    files,
+    central: resolveCentralUrl({
+      envUrl: process.env.JOELCLAW_CENTRAL_URL,
+      systemBusText,
+    }),
+  });
   const status = yield* index.run(["status"], input.cwd);
   return {
     text: capText(
       [
         "# Session capture status",
         "",
+        renderCaptureHealth(health),
+        "",
+        "## Native transcript adapters",
+        renderAdapterHealth(adapters),
+        "",
+        "## Capture files and outboxes",
         renderCaptureState(files),
         "",
         "## joelclaw status",
@@ -412,12 +442,15 @@ const runCapture = Effect.fn("SessionEngine.capture")(function* (input: CaptureI
     ),
     details: {
       wrapper: "session_capture_status actor",
-      ok: true,
+      ok: health.ok,
       engine: "effect-v4+xstate-v5",
       operation: "Capture",
+      adapters,
       files,
+      health,
       joelclaw: remoteDetails(status),
     },
+    isError: !health.ok,
   } satisfies ToolPayload;
 });
 
