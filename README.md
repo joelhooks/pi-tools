@@ -73,19 +73,31 @@ Primary Pi tools:
 - `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
-The same read-only surface is available as the `pi-session-recall-mcp` stdio server. MCP is the preferred cross-agent delivery boundary. Pi's `mcpScript` Code Mode can call `recall`, choose a native session, then call `inspect_session` or `expand_session` without loading every memory schema into the prompt.
+The same read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool, then Executor composes recall, native search, and bounded inspection through its saved `memory` connection.
 
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "node",
-      "args": ["/absolute/path/to/pi-tools/session-reader/mcp-server.ts"],
-      "lifecycle": "lazy"
-    }
-  }
-}
+`pi-session-recall-mcp-http` serves Streamable HTTP for Executor. It:
+
+- binds only to `127.0.0.1`;
+- requires a bearer token of at least 32 bytes;
+- returns no query or body data from `/healthz`;
+- creates a stateless MCP transport for each request;
+- exposes only read-only, idempotent tools.
+
+```bash
+SESSION_RECALL_MCP_TOKEN="$(secrets lease session_recall_mcp_bearer_token --ttl 1h)" \
+  pi-session-recall-mcp-http
 ```
+
+After adding `session_recall_mcp_bearer_token` to agent-secrets, install the user LaunchAgent from a clean release:
+
+```bash
+session-reader/install-executor-memory-service.sh install /absolute/path/to/clean/pi-tools-release
+curl --fail --silent http://127.0.0.1:4792/healthz
+```
+
+Register `http://127.0.0.1:4792/mcp` as a remote Streamable HTTP integration in Executor. Use Executor's credential handoff for the `Authorization: Bearer` value. Never put the token in a prompt, shell argv, source file, shared MCP config, or Executor integration metadata.
+
+`pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
 MCP tools: `recall`, `search_sessions`, `inspect_session`, `expand_session`, `session_context`, `session_chunks`, and `capture_status`.
 

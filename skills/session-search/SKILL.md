@@ -43,35 +43,33 @@ grok
 opencode
 ```
 
-## MCP Code Mode
+## Executor Code Mode
 
-When the `memory` MCP server is configured, use `mcpScript` for multi-step work. Discover exact names first, then preserve the semantic-to-evidence order:
+Executor owns the saved `memory` MCP connection. Use one `executor_execute` call for multi-step recall and evidence work. Inside Executor, discover exact paths before calling them:
 
 ```js
-const { items } = await tools.search({ query: "memory recall session evidence", server: "memory" });
-const recallTool = items.find((item) => item.name === "recall");
-const searchTool = items.find((item) => item.name === "search_sessions");
+const found = await tools.search({
+  namespace: "memory",
+  query: "recall search sessions inspect evidence",
+  limit: 20,
+});
+const recallTool = found.items.find((item) => item.name === "recall");
+const searchTool = found.items.find((item) => item.name === "search_sessions");
 if (!recallTool || !searchTool) return { error: "memory tools unavailable" };
 
-const recall = await tools.call(recallTool.path, {
-  query,
-  project,
-  workstream,
-  limit: 10,
-});
+const recall = await tools[recallTool.path]({ query, project, workstream, limit: 10 });
 if (!recall.ok) return recall;
 
-// Drill into raw sessions only when the recall result needs exact evidence.
-const sessions = await tools.call(searchTool.path, {
+// Drill into raw sessions only when recall needs exact evidence.
+const sessions = await tools[searchTool.path]({
   query: evidencePhrase,
   runtime: "all",
-  source: "local",
   limit: 5,
 });
 return { recall: recall.data, sessions: sessions.ok ? sessions.data : sessions };
 ```
 
-Do not pass a private query in argv. MCP transports tool arguments over stdio. Direct CLI requests use stdin or a mode-0600 request file.
+Do not pass a private query in argv. Executor sends MCP arguments over authenticated loopback HTTP. Direct CLI requests use stdin or a mode-0600 request file.
 
 ## Native roots
 
