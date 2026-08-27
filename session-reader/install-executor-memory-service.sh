@@ -24,11 +24,21 @@ case "${1:-}" in
     old_running=false
     rollback_needed=false
 
+    wait_for_unloaded() {
+      attempt=0
+      while launchctl print "gui/$uid/$label" >/dev/null 2>&1; do
+        if [ "$attempt" -ge 20 ]; then return 1; fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+      done
+    }
+
     finish() {
       status=$?
       trap - EXIT
       if [ "$rollback_needed" = true ]; then
         launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+        wait_for_unloaded || true
         if [ "$old_wrapper" = true ]; then mv "$wrapper_backup" "$wrapper"; else rm -f "$wrapper"; fi
         if [ "$old_plist" = true ]; then mv "$plist_backup" "$plist"; else rm -f "$plist"; fi
         if [ "$old_running" = true ] && [ -f "$plist" ]; then
@@ -88,6 +98,10 @@ EOF
     mv "$wrapper_stage" "$wrapper"
     mv "$plist_stage" "$plist"
     launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+    if ! wait_for_unloaded; then
+      printf 'session recall MCP did not unload before activation\n' >&2
+      exit 1
+    fi
 
     activation_ok=false
     if launchctl bootstrap "gui/$uid" "$plist"; then
