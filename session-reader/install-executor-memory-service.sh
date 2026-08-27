@@ -106,7 +106,7 @@ EOF
     activation_ok=false
     if launchctl bootstrap "gui/$uid" "$plist"; then
       attempt=0
-      while [ "$attempt" -lt 20 ]; do
+      while [ "$attempt" -lt 60 ]; do
         if "$curl_bin" --fail --silent --max-time 1 \
           http://127.0.0.1:4792/healthz >/dev/null; then
           activation_ok=true
