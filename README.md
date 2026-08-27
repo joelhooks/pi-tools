@@ -66,14 +66,14 @@ Use `/skill:session-search` for the operating workflow.
 Primary Pi tools:
 
 - `flowing_recall` — explicit project/workstream recall with three separate lanes
-- `session_search` — search bounded local native transcript details
+- `session_search` — compatibility-only search for explicit native evidence, never semantic recall
 - `session_capture_status` — verify native adapters and Pi/Claude/Codex delivery state
 - `session_context` — bounded extraction for a session id or transcript path
 - `session_inspect` — deterministic line inspection around a regex
 - `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
-The same read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool, then Executor composes recall, native search, and bounded inspection through its saved `memory` connection.
+The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. Native evidence search requires the signed receipt from that successful recall.
 
 `pi-session-recall-mcp-http` serves Streamable HTTP for Executor. It:
 
@@ -99,7 +99,9 @@ Register `http://127.0.0.1:4792/mcp` as a remote Streamable HTTP integration in 
 
 `pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
-MCP tools: `recall`, `search_sessions`, `inspect_session`, `expand_session`, `session_context`, `session_chunks`, and `capture_status`.
+MCP tools: `recall`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+
+`recall` requires an exact persisted project/workstream scope and returns a process-bound evidence receipt. The two drill-down tools reject calls without a valid receipt, cap native scans at 200 files, and never act as initial memory search.
 
 Still removed:
 

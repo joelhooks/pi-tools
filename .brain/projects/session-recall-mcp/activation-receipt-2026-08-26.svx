@@ -167,6 +167,20 @@ A no-match scan across the full 1,000-file bound completed in 15.5 seconds. The 
 
 The regression test uses an async line source that throws on a fourth read. Search returns after the third maximum-scoring snippet, proving the bounded stop rather than relying on timing alone.
 
+## Recall-first evidence gate
+
+Raw transcript search was still too easy to select as initial memory search. The MCP surface now enforces the intended sequence:
+
+1. `recall` returns the three distilled lanes and a signed evidence receipt.
+2. `drill_down_session_evidence` and `drill_down_session_chunks` require that receipt.
+3. The receipt is process-bound and expires after ten minutes.
+4. Native evidence scans cap at 200 files and default to 50.
+5. Exact `inspect_session`, `expand_session`, and `session_context` calls remain available when the caller already has a session identifier.
+
+The old broad `search_sessions` and `session_chunks` MCP names are removed. A regression test proves that a forged receipt returns `recall-required-before-raw-evidence` without starting a search operation.
+
+Flowing recall scope remains exact by product law. A missing projection head means the caller supplied an empty or incorrect project/workstream. Callers must correct scope instead of falling back to transcripts.
+
 ## Rollback
 
 1. Remove the saved memory integration from Executor.

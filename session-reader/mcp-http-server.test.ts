@@ -75,11 +75,11 @@ describe("session recall MCP HTTP transport", () => {
           listed.tools.map((tool) => tool.name),
           [
             "recall",
-            "search_sessions",
+            "drill_down_session_evidence",
             "inspect_session",
             "expand_session",
             "session_context",
-            "session_chunks",
+            "drill_down_session_chunks",
             "capture_status",
           ],
         );
