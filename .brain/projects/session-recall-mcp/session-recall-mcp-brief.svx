@@ -29,7 +29,7 @@ The server exposes narrow read operations:
 4. `session_context` and `session_chunks` return bounded summaries or snippets.
 5. `capture_status` reports archive health without reading outbox bodies.
 
-The direct Pi extension keeps its compatibility tools until the MCP path has live proof. The published release must include `session_expand`, which currently exists only in the dirty primary checkout.
+The direct Pi extension keeps its compatibility tools during the MCP rollout. The published release now includes `session_expand`; the dirty primary checkout remains untouched.
 
 ## Product boundaries
 
@@ -78,3 +78,5 @@ A typed `evidenceId -> accepted Run -> native session window` resolver remains a
 - Search has live hits for all six native runtimes.
 - Unit tests, typecheck, Brain check, diff check, and an independent review pass.
 - Capture backlog is reported separately. No outbox mutation is hidden inside this code change.
+
+Activation evidence lives in [the activation receipt](./activation-receipt-2026-08-26.svx).
