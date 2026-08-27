@@ -183,7 +183,7 @@ interface OpenCodeSessionRow {
 
 interface OpenCodeMessageRow {
   readonly id: string;
-  readonly data: string;
+  readonly data: string | null;
   readonly data_length: number;
   readonly time_created: number;
   readonly time_updated: number;
@@ -192,7 +192,7 @@ interface OpenCodeMessageRow {
 interface OpenCodePartRow {
   readonly id: string;
   readonly message_id: string;
-  readonly data: string;
+  readonly data: string | null;
   readonly data_length: number;
 }
 
@@ -408,8 +408,11 @@ function openCodeAdapter(databasePath: string): SessionAdapter {
         const messages = database
           .prepare(
             `SELECT id,
-                    substr(data, 1, ?) AS data,
-                    length(data) AS data_length,
+                    CASE
+                      WHEN length(CAST(data AS BLOB)) <= ? THEN data
+                      ELSE NULL
+                    END AS data,
+                    length(CAST(data AS BLOB)) AS data_length,
                     time_created,
                     time_updated
              FROM message
@@ -427,8 +430,11 @@ function openCodeAdapter(databasePath: string): SessionAdapter {
           .prepare(
             `SELECT id,
                     message_id,
-                    substr(data, 1, ?) AS data,
-                    length(data) AS data_length
+                    CASE
+                      WHEN length(CAST(data AS BLOB)) <= ? THEN data
+                      ELSE NULL
+                    END AS data,
+                    length(CAST(data AS BLOB)) AS data_length
              FROM part
              WHERE session_id = ?
              ORDER BY time_created, id
@@ -446,12 +452,14 @@ function openCodeAdapter(databasePath: string): SessionAdapter {
             (message) =>
               !Number.isSafeInteger(message.data_length) ||
               message.data_length < 0 ||
+              message.data === null ||
               message.data_length > OPENCODE_MAX_DATA_BYTES,
           ) ||
           parts.some(
             (part) =>
               !Number.isSafeInteger(part.data_length) ||
               part.data_length < 0 ||
+              part.data === null ||
               part.data_length > OPENCODE_MAX_DATA_BYTES,
           )
         ) {
@@ -468,6 +476,8 @@ function openCodeAdapter(databasePath: string): SessionAdapter {
         let redacted = false;
         for (const [index, message] of messages.entries()) {
           if (index % 128 === 0) checkSignal(signal);
+          if (message.data === null)
+            throw new Error("OpenCode message exceeds bounded reader limits");
           const data = decodeJson(OpenCodeMessageDataSchema, message.data);
           if (!data || (data.role === "assistant" && data.summary === true)) continue;
           if (
@@ -477,6 +487,7 @@ function openCodeAdapter(databasePath: string): SessionAdapter {
             continue;
           }
           const visible = (partsByMessage.get(message.id) ?? []).flatMap((part) => {
+            if (part.data === null) throw new Error("OpenCode part exceeds bounded reader limits");
             const decoded = decodeJson(OpenCodePartDataSchema, part.data);
             if (
               !decoded ||

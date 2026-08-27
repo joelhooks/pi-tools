@@ -262,7 +262,7 @@ describe("session reader domain", () => {
         "oversized-session",
         1_700_000_002_002,
         1_700_000_002_002,
-        JSON.stringify({ type: "text", text: "x".repeat(9_000) }),
+        JSON.stringify({ type: "text", text: "🧠".repeat(3_000) }),
       );
     database.close();
     const withOversized = [];
