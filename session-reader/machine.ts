@@ -34,9 +34,11 @@ const machineSetup = setup({
   },
   actors: { effectOperation },
   guards: {
+    isRecall: ({ context }) => context.input.operation._tag === "Recall",
     isSearch: ({ context }) => context.input.operation._tag === "Search",
     isInspect: ({ context }) => context.input.operation._tag === "Inspect",
     isExtract: ({ context }) => context.input.operation._tag === "Extract",
+    isExpand: ({ context }) => context.input.operation._tag === "Expand",
     isChunks: ({ context }) => context.input.operation._tag === "Chunks",
     isCapture: ({ context }) => context.input.operation._tag === "Capture",
   },
@@ -49,9 +51,11 @@ export const sessionReaderMachine = machineSetup.createMachine({
   states: {
     dispatching: {
       always: [
+        { guard: "isRecall", target: "recalling" },
         { guard: "isSearch", target: "searching" },
         { guard: "isInspect", target: "inspecting" },
         { guard: "isExtract", target: "extracting" },
+        { guard: "isExpand", target: "expanding" },
         { guard: "isChunks", target: "chunking" },
         { guard: "isCapture", target: "checkingCapture" },
         {
@@ -67,6 +71,26 @@ export const sessionReaderMachine = machineSetup.createMachine({
           target: "cancelled",
           actions: assign({ status: () => "cancelled" as const }),
         },
+      },
+    },
+    recalling: {
+      invoke: {
+        src: "effectOperation",
+        input: ({ context }) => context.input,
+        onDone: {
+          target: "succeeded",
+          actions: assign({
+            status: () => "succeeded" as const,
+            result: ({ event }) => event.output,
+          }),
+        },
+        onError: {
+          target: "failed",
+          actions: assign({ status: () => "failed" as const, error: ({ event }) => event.error }),
+        },
+      },
+      on: {
+        CANCEL: { target: "cancelled", actions: assign({ status: () => "cancelled" as const }) },
       },
     },
     searching: {
@@ -110,6 +134,26 @@ export const sessionReaderMachine = machineSetup.createMachine({
       },
     },
     extracting: {
+      invoke: {
+        src: "effectOperation",
+        input: ({ context }) => context.input,
+        onDone: {
+          target: "succeeded",
+          actions: assign({
+            status: () => "succeeded" as const,
+            result: ({ event }) => event.output,
+          }),
+        },
+        onError: {
+          target: "failed",
+          actions: assign({ status: () => "failed" as const, error: ({ event }) => event.error }),
+        },
+      },
+      on: {
+        CANCEL: { target: "cancelled", actions: assign({ status: () => "cancelled" as const }) },
+      },
+    },
+    expanding: {
       invoke: {
         src: "effectOperation",
         input: ({ context }) => context.input,

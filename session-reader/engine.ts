@@ -1,8 +1,10 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { Effect, Schema } from "effect";
 import { assessCaptureHealth, resolveCentralUrl } from "./capture-paths.ts";
 import {
+  evidence,
   extractTranscript,
   inspectTranscript,
   type LocalSessionHit,
@@ -10,16 +12,20 @@ import {
   SessionReaderError,
   type SessionSource,
 } from "./domain.ts";
+import { type FlowingRecallInput, runFlowingRecall } from "./flowing-recall.ts";
 import { JoelclawIndex, JoelclawIndexLive } from "./joelclaw-index.ts";
 import {
   capText,
+  expansionDetails,
   inspectDetails,
   MAX_TOOL_TEXT_CHARS,
   remoteDetails,
   renderAdapterHealth,
   renderCaptureHealth,
   renderCaptureState,
+  renderExpansion,
   renderExtraction,
+  renderFlowingRecall,
   renderInspect,
   renderLocalHits,
   renderRemote,
@@ -39,6 +45,10 @@ interface SearchInput {
   readonly extract: boolean;
 }
 
+interface RecallInput extends FlowingRecallInput {
+  readonly cwd: string;
+}
+
 interface InspectInput {
   readonly sessionId: string;
   readonly around: string;
@@ -51,6 +61,13 @@ interface ExtractInput {
   readonly query: string;
   readonly compatibilityAgent?: string;
   readonly ignoredModel?: string;
+}
+
+interface ExpandInput {
+  readonly sessionId: string;
+  readonly cursor?: string;
+  readonly direction?: "forward" | "backward";
+  readonly limit: number;
 }
 
 interface ChunksInput {
@@ -73,6 +90,25 @@ interface CaptureInput {
 }
 
 export const SessionOperationSchema = Schema.TaggedUnion({
+  Recall: {
+    query: Schema.String,
+    project: Schema.String,
+    workstream: Schema.String,
+    allowedPrivacy: Schema.Array(
+      Schema.Union([
+        Schema.Literal("public"),
+        Schema.Literal("private"),
+        Schema.Literal("sensitive"),
+      ]),
+    ),
+    includeSuperseded: Schema.Boolean,
+    limits: Schema.Struct({
+      curated: Schema.Number,
+      observations: Schema.Number,
+      reflections: Schema.Number,
+    }),
+    cwd: Schema.String,
+  },
   Search: {
     query: Schema.String,
     agent: Schema.Union([
@@ -82,6 +118,7 @@ export const SessionOperationSchema = Schema.TaggedUnion({
       Schema.Literal("codex"),
       Schema.Literal("cursor"),
       Schema.Literal("grok"),
+      Schema.Literal("opencode"),
     ]),
     source: Schema.Union([
       Schema.Literal("typesense"),
@@ -106,6 +143,14 @@ export const SessionOperationSchema = Schema.TaggedUnion({
     query: Schema.String,
     compatibilityAgent: Schema.optional(Schema.String),
     ignoredModel: Schema.optional(Schema.String),
+  },
+  Expand: {
+    sessionId: Schema.String,
+    cursor: Schema.optional(Schema.String),
+    direction: Schema.optional(
+      Schema.Union([Schema.Literal("forward"), Schema.Literal("backward")]),
+    ),
+    limit: Schema.Number,
   },
   Chunks: {
     query: Schema.String,
@@ -132,11 +177,13 @@ export const SessionOperationSchema = Schema.TaggedUnion({
 export type SessionOperation = typeof SessionOperationSchema.Type;
 
 export const SessionOperation = {
+  Recall: (input: RecallInput): SessionOperation => SessionOperationSchema.cases.Recall.make(input),
   Search: (input: SearchInput): SessionOperation => SessionOperationSchema.cases.Search.make(input),
   Inspect: (input: InspectInput): SessionOperation =>
     SessionOperationSchema.cases.Inspect.make(input),
   Extract: (input: ExtractInput): SessionOperation =>
     SessionOperationSchema.cases.Extract.make(input),
+  Expand: (input: ExpandInput): SessionOperation => SessionOperationSchema.cases.Expand.make(input),
   Chunks: (input: ChunksInput): SessionOperation => SessionOperationSchema.cases.Chunks.make(input),
   Capture: (input: CaptureInput): SessionOperation =>
     SessionOperationSchema.cases.Capture.make(input),
@@ -167,9 +214,41 @@ function currentHit(
   );
 }
 
+const runRecall = Effect.fn("SessionEngine.recall")(function* (input: RecallInput) {
+  const result = yield* Effect.tryPromise({
+    try: (signal) => runFlowingRecall(input, { cwd: input.cwd, signal }),
+    catch: (cause) => readerError("SessionEngine.recall", cause),
+  });
+  return {
+    text: renderFlowingRecall(result.composed),
+    details: {
+      wrapper: "flowing_recall actor",
+      ok: true,
+      engine: "effect-v4+xstate-v5",
+      operation: "Recall",
+      adapter: result.adapter,
+      composed: result.composed,
+      curatedBackend: result.curatedBackend,
+      timings: result.timings,
+    },
+  } satisfies ToolPayload;
+});
+
 const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInput) {
+  if (input.source !== "local") {
+    return {
+      text: "Remote session search is disabled until joelclaw accepts queries on stdin.",
+      details: {
+        wrapper: "session_search actor",
+        ok: false,
+        engine: "effect-v4+xstate-v5",
+        operation: "Search",
+        code: "remote-query-transport-unavailable",
+      },
+      isError: true,
+    } satisfies ToolPayload;
+  }
   const store = yield* SessionStore;
-  const index = yield* JoelclawIndex;
   const localHits = yield* store.searchLocal({
     query: input.query,
     agent: input.agent,
@@ -177,36 +256,13 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
     maxFiles: input.maxFiles,
   });
 
-  const remote =
-    input.source === "local"
-      ? undefined
-      : yield* index.run(
-          [
-            "session",
-            "search",
-            input.query,
-            "--source",
-            input.source,
-            "--machine",
-            input.machine,
-            "--limit",
-            String(input.limit),
-            ...(input.extract ? ["--extract"] : []),
-          ],
-          input.cwd,
-        );
-
   const text = capText(
     [
       "# Session search",
-      "Effect v4 local engine with an optional joelclaw index adapter.",
-      remote ? "\n## Joelclaw pointers" : undefined,
-      remote ? renderRemote(remote) : undefined,
+      "Effect v4 local engine. Use flowing recall before raw evidence drill-down.",
       "\n## Local transcript details",
       renderLocalHits(localHits),
-    ]
-      .filter((part): part is string => typeof part === "string")
-      .join("\n"),
+    ].join("\n"),
   );
 
   return {
@@ -220,7 +276,6 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
       source: input.source,
       machine: input.machine,
       localHits,
-      remote: remote ? remoteDetails(remote) : undefined,
     },
   } satisfies ToolPayload;
 });
@@ -266,6 +321,99 @@ const runExtract = Effect.fn("SessionEngine.extract")(function* (input: ExtractI
       redacted: extraction.redacted,
       compatibilityAgent: input.compatibilityAgent,
       ignoredModel: input.ignoredModel,
+    },
+  } satisfies ToolPayload;
+});
+
+const ExpansionCursorSchema = Schema.Struct({
+  sessionId: Schema.String,
+  path: Schema.String,
+  offset: Schema.Number,
+  direction: Schema.Union([Schema.Literal("forward"), Schema.Literal("backward")]),
+});
+type ExpansionCursor = typeof ExpansionCursorSchema.Type;
+const expansionCursorKey = randomBytes(32);
+
+function expansionCursorSignature(payload: string): string {
+  return createHmac("sha256", expansionCursorKey).update(payload).digest("base64url");
+}
+
+function encodeExpansionCursor(cursor: ExpansionCursor): string {
+  const payload = Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+  return `${payload}.${expansionCursorSignature(payload)}`;
+}
+
+function decodeExpansionCursor(value: string): ExpansionCursor {
+  try {
+    const [payload, signature, overflow] = value.split(".");
+    if (!payload || !signature || overflow !== undefined) throw new Error("invalid cursor shape");
+    const expected = Buffer.from(expansionCursorSignature(payload), "utf8");
+    const received = Buffer.from(signature, "utf8");
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+      throw new Error("invalid cursor signature");
+    }
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return Schema.decodeUnknownSync(ExpansionCursorSchema)(parsed);
+  } catch (cause) {
+    throw readerError("SessionEngine.expand.decodeCursor", cause);
+  }
+}
+
+const runExpand = Effect.fn("SessionEngine.expand")(function* (input: ExpandInput) {
+  const store = yield* SessionStore;
+  const path = yield* store.resolvePath(input.sessionId);
+  const transcript = yield* store.readTranscript(path);
+  const decoded = input.cursor
+    ? decodeExpansionCursor(input.cursor)
+    : {
+        sessionId: input.sessionId,
+        path: transcript.path,
+        offset: input.direction === "backward" ? transcript.entries.length : 0,
+        direction: input.direction ?? "forward",
+      };
+  if (decoded.sessionId !== input.sessionId || decoded.path !== transcript.path) {
+    throw readerError(
+      "SessionEngine.expand.cursorMismatch",
+      new Error("Expansion cursor belongs to a different session or transcript path"),
+    );
+  }
+  const direction = decoded.direction;
+  const offset = Math.min(transcript.entries.length, Math.max(0, Math.floor(decoded.offset)));
+  const limit = Math.min(40, Math.max(1, Math.floor(input.limit)));
+  const start = direction === "backward" ? Math.max(0, offset - limit) : offset;
+  const end =
+    direction === "backward" ? offset : Math.min(transcript.entries.length, offset + limit);
+  const entries = transcript.entries.slice(start, end).map(evidence);
+  const nextOffset = direction === "backward" ? start : end;
+  const hasMore = direction === "backward" ? start > 0 : end < transcript.entries.length;
+  const page = {
+    sessionId: transcript.sessionId,
+    startedAt: transcript.startedAt,
+    cwdKey: transcript.cwdKey,
+    path: transcript.path,
+    direction,
+    offset: start,
+    totalEntries: transcript.entries.length,
+    entries,
+    nextCursor: hasMore
+      ? encodeExpansionCursor({
+          sessionId: input.sessionId,
+          path: transcript.path,
+          offset: nextOffset,
+          direction,
+        })
+      : undefined,
+  } satisfies import("./presenter.ts").ExpansionPage;
+
+  return {
+    text: renderExpansion(page),
+    details: {
+      wrapper: "session_expand actor",
+      ok: true,
+      engine: "effect-v4+xstate-v5",
+      operation: "Expand",
+      ...expansionDetails(page),
+      maxOutputChars: MAX_TOOL_TEXT_CHARS,
     },
   } satisfies ToolPayload;
 });
@@ -350,54 +498,18 @@ const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: 
 
 const runChunks = Effect.fn("SessionEngine.chunks")(function* (input: ChunksInput) {
   if (input.source === "local") return yield* runLocalChunks(input);
-
-  const local = input.source === "both" ? yield* runLocalChunks(input) : undefined;
-  const index = yield* JoelclawIndex;
-  const remote = yield* index.run(
-    [
-      "session",
-      "chunks",
-      "--source",
-      input.source === "both" ? "typesense" : input.source,
-      "--machine",
-      input.machine,
-      "--limit",
-      String(input.limit),
-      "--context-before",
-      String(input.contextBefore),
-      "--context-after",
-      String(input.contextAfter),
-      "--",
-      input.query,
-    ],
-    input.cwd,
-  );
-
-  if (local) {
-    return {
-      text: capText([local.text, "", "# Remote index pointers", renderRemote(remote)].join("\n")),
-      details: {
-        ...local.details,
-        wrapper: "session_chunks actor",
-        ok: true,
-        source: "both",
-        remote: remoteDetails(remote),
-      },
-    } satisfies ToolPayload;
-  }
-
   return {
-    text: renderRemote(remote),
+    text: "Remote session chunks are disabled until joelclaw accepts queries on stdin.",
     details: {
       wrapper: "session_chunks actor",
-      ok: remote.ok,
+      ok: false,
       engine: "effect-v4+xstate-v5",
       operation: "Chunks",
       source: input.source,
-      remote: remoteDetails(remote),
+      code: "remote-query-transport-unavailable",
       warnings: input.warnings,
     },
-    isError: !remote.ok,
+    isError: true,
   } satisfies ToolPayload;
 });
 
@@ -458,12 +570,16 @@ export const runOperation = Effect.fn("SessionEngine.runOperation")(function* (
   operation: SessionOperation,
 ): Effect.fn.Return<ToolPayload, SessionReaderError, SessionStore | JoelclawIndex> {
   switch (operation._tag) {
+    case "Recall":
+      return yield* runRecall(operation);
     case "Search":
       return yield* runSearch(operation);
     case "Inspect":
       return yield* runInspect(operation);
     case "Extract":
       return yield* runExtract(operation);
+    case "Expand":
+      return yield* runExpand(operation);
     case "Chunks":
       return yield* runChunks(operation);
     case "Capture":

@@ -1,85 +1,99 @@
 ---
 name: session-search
-description: Search Joel's Pi, Claude, and Codex session history using the pi-tools session-reader flow. Use when the user asks to search past sessions, recover context, find prior decisions, inspect transcript history, continue old work, find support patterns from previous runs, or verify whether sessions are being captured by JoelClaw.
+description: Search and verify Joel's Pi, Claude, Codex, Cursor, Grok, and OpenCode session history. Use when asked to recover prior context, find exact transcript evidence, inspect session receipts, continue old work, or verify capture health. Prefer flowing recall before raw transcript search when the question is about prior decisions or project memory.
 ---
 
 # Session Search
 
-Use this skill when session history is the source of truth. Do not guess from memory when transcripts can answer it.
+Use transcripts as receipts. Do not guess from memory when session history can answer.
 
-## Default flow
+## Source order
 
-1. Search indexed pointers first:
+1. Use flowing recall for vague prior context, project decisions, or "what did we decide?"
+2. Read supporting flowing observations and their evidence references.
+3. Search native sessions only when exact transcript evidence is needed.
+4. Verify capture health before claiming Central has the runtime history.
 
-```bash
-joelclaw session search "<query>" --source local --machine "$(hostname -s)" --runtime all --limit 10 --extract
+Flowing recall has exactly three lanes:
+
+1. `flowing-reflections`
+2. `flowing-observations`
+3. `curated-pages`
+
+Never merge lane scores. Raw transcripts are explicit drill-down evidence, not a fourth lane.
+
+## Pi tools
+
+- `flowing_recall` — exact project/workstream semantic recall.
+- `session_search` — bounded local native session search. Remote search stays disabled until the CLI accepts stdin.
+- `session_context` — bounded structured extraction from one session.
+- `session_inspect` — exact line evidence around one regex.
+- `session_expand` — bounded continuation through an opaque cursor.
+- `session_chunks` — bounded transcript snippets; excludes the current session by default.
+- `session_capture_status` — native adapter and capture-delivery health.
+
+The native reader supports:
+
+```text
+pi
+claude
+codex
+cursor
+grok
+opencode
 ```
 
-Use `--source both` when cross-machine/Typesense results matter and the backplane is healthy. Use `--runtime pi|claude-code|claude|codex|all` to narrow raw transcript roots or Typesense runtime filters.
+## MCP Code Mode
 
-2. Prefer the Pi tool when available:
+When the `memory` MCP server is configured, use `mcpScript` for multi-step work. Discover exact names first, then preserve the semantic-to-evidence order:
 
-- `session_search` for new work: pointer search plus local Pi/Claude/Codex transcript detail scan.
-- `sessions` only for old prompts/compatibility.
-- `session_context` after you have a session id or local JSONL path.
-- `session_inspect` when exact transcript line evidence matters.
-- `session_chunks` for small snippet searches, but watch for current-session self-matches.
-- `session_capture_status` to verify capture health.
+```js
+const { items } = await tools.search({ query: "memory recall session evidence", server: "memory" });
+const recallTool = items.find((item) => item.name === "recall");
+const searchTool = items.find((item) => item.name === "search_sessions");
+if (!recallTool || !searchTool) return { error: "memory tools unavailable" };
 
-3. Dig locally for details.
+const recall = await tools.call(recallTool.path, {
+  query,
+  project,
+  workstream,
+  limit: 10,
+});
+if (!recall.ok) return recall;
 
-Local transcript roots on this machine:
+// Drill into raw sessions only when the recall result needs exact evidence.
+const sessions = await tools.call(searchTool.path, {
+  query: evidencePhrase,
+  runtime: "all",
+  source: "local",
+  limit: 5,
+});
+return { recall: recall.data, sessions: sessions.ok ? sessions.data : sessions };
+```
 
-```bash
+Do not pass a private query in argv. MCP transports tool arguments over stdio. Direct CLI requests use stdin or a mode-0600 request file.
+
+## Native roots
+
+```text
 ~/.pi/agent/sessions/**/*.jsonl
 ~/.claude/projects/**/*.jsonl
 ~/.codex/sessions/**/*.jsonl
+~/.cursor/acp-sessions/*/{meta.json,store.db}
+~/.grok/sessions/**/chat_history.jsonl
+~/.local/share/opencode/opencode.db
 ```
 
-When Joel asks “search my sessions” or similar, return useful local paths/session ids so the next agent can inspect the exact transcript.
+## Capture health
 
-## Capture verification
+`session_capture_status` checks native adapters for all six runtimes. It separately checks the canonical JoelClaw delivery namespace for Pi, Claude Code, and Codex:
 
-Check JoelClaw capture state before claiming history is complete:
-
-```bash
-joelclaw status
-ls -l ~/.joelclaw/*capture.log ~/.joelclaw/*session-state.json 2>/dev/null
+```text
+~/.joelclaw/capture/<machine_id>/<runtime>/{state.json,capture.log,outbox/}
 ```
 
-Current runtime capture belongs to the single-owner `joelclaw` flowing-memory host adapter. Native transcript readability is evidence availability, not proof of semantic admission. Flat state/log/outbox files are runtime-ambiguous legacy Central artifacts.
-
-For Codex legacy diagnostics only, run the non-mutating repo-local doctor:
-
-```bash
-node joelclaw-session-capture/scripts/doctor-codex-session-capture.js
-```
-
-The doctor intentionally reports current Codex flowing capture as unproven. Do not install the archived Central-posting plugin or treat stale canonical files as liveness proof.
-
-Codex-only smoke:
-
-```bash
-joelclaw session search "<codex-session-id-or-unique-phrase>" \
-  --source local \
-  --machine "$(hostname -s)" \
-  --runtime codex \
-  --limit 5 \
-  --extract
-```
-
-Expected path prefix: `~/.codex/sessions/`.
-
-## Output shape
-
-Keep reports short:
-
-- query used
-- sources checked
-- top session ids/paths
-- what the transcripts actually show
-- capture gaps or backplane health problems
+A readable native transcript is not proof of successful Central ingest. Pending outbox files mean delivery is queued or degraded. Legacy flat files remain historical evidence.
 
 ## Privacy
 
-Do not paste raw secrets, customer private data, or long transcript dumps. Summarize and cite paths/line evidence instead.
+Do not paste secrets, raw transcript dumps, customer private data, or paid source text. Keep results bounded. Cite session IDs, paths, and line windows. Do not copy private recall results into outward messages or public artifacts.

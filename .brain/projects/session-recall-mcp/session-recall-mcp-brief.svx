@@ -1,0 +1,80 @@
+---
+title: "Session Recall MCP"
+type: "project"
+status: "active"
+privacy: "private"
+created_at: "2026-08-26"
+tags:
+  - memory
+  - sessions
+  - mcp
+  - code-mode
+---
+
+# Session Recall MCP
+
+## Objective
+
+Give Pi and other local agent harnesses one read-only memory server that composes flowing recall with bounded native-session evidence. Keep the direct Pi session tools during rollout. Use MCP proxy and `mcpScript` Code Mode to avoid adding every memory tool schema to every agent prompt.
+
+## Decision
+
+MCP is the right delivery boundary. Code Mode is the client-side orchestration layer, not a new memory authority.
+
+The server exposes narrow read operations:
+
+1. `recall` returns the canonical three composed lanes from `joelclaw recall`.
+2. `search_sessions` searches bounded native Pi, Claude, Codex, Cursor, Grok, and OpenCode evidence.
+3. `inspect_session` and `expand_session` drill into one selected native session.
+4. `session_context` and `session_chunks` return bounded summaries or snippets.
+5. `capture_status` reports archive health without reading outbox bodies.
+
+The direct Pi extension keeps its compatibility tools until the MCP path has live proof. The published release must include `session_expand`, which currently exists only in the dirty primary checkout.
+
+## Product boundaries
+
+- Flowing recall remains exactly reflections, observations, and curated pages.
+- Raw transcripts never become a fourth recall lane.
+- Scores are never compared across recall lanes.
+- Native sessions remain immutable evidence behind runtime adapters.
+- The MCP server is read-only. It does not capture, admit, mutate, replay, drain, or delete anything.
+- Query text travels in MCP stdio or private mode-0600 request files. It never enters argv, stderr, telemetry, or receipts.
+- Native session search is local-only until `joelclaw sessions` accepts a stdin/request-file query contract. Flowing recall owns semantic and cross-machine discovery in the meantime.
+- Server stdout is MCP protocol only. Server stderr contains no request or result bodies.
+- Tool results stay bounded and redact known secret forms.
+- Provider calls stay outside this server.
+
+## Authority map
+
+| Surface | Owner |
+| --- | --- |
+| Native transcript files and OpenCode SQLite | Runtime adapters |
+| Accepted Runs | JoelClaw and flowing-memory authority |
+| Reflections and observations | joelclaw-memory projections |
+| Curated pages | Brain |
+| Session Reader operations | pi-tools |
+| MCP transport and Code Mode | MCP SDK plus pi-mcp-adapter |
+
+## Activation
+
+1. Add OpenCode as a read-only native adapter.
+2. Publish `session_expand` in the clean release.
+3. Add a stdio MCP server that reuses the existing Effect/XState reader.
+4. Add typed flowing recall through the existing `joelclaw` process boundary.
+5. Test direct tools and MCP tools against fixtures.
+6. Publish through `shitratgit[bot]`.
+7. Pin Pi and shared MCP config to a clean release worktree.
+8. Prove `mcpScript` can recall, search, and inspect without direct memory tools.
+
+## Deferred
+
+A typed `evidenceId -> accepted Run -> native session window` resolver remains a later slice. It depends on activated accepted-body authority and a stable evidence-locator contract. Until then, Code Mode may use recall claims to choose explicit session searches, but it must not claim a raw session is the exact supporting evidence without matching identifiers or transcript text.
+
+## Finish line
+
+- Fresh Pi loads the published direct compatibility tools, including `session_expand`.
+- MCP discovery finds the memory server from shared config.
+- Code Mode completes a recall -> session search -> bounded inspect flow.
+- Search has live hits for all six native runtimes.
+- Unit tests, typecheck, Brain check, diff check, and an independent review pass.
+- Capture backlog is reported separately. No outbox mutation is hidden inside this code change.

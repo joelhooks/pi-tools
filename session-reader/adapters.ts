@@ -4,6 +4,7 @@ import { open, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { Result, Schema } from "effect";
 import {
   compactText,
@@ -17,6 +18,9 @@ import {
 } from "./domain.ts";
 
 const DISCOVERY_HARD_LIMIT = 50_000;
+const OPENCODE_MAX_MESSAGES_PER_SESSION = 2_000;
+const OPENCODE_MAX_PARTS_PER_SESSION = 5_000;
+const OPENCODE_MAX_DATA_BYTES = 8 * 1024;
 
 /** Query bounds shared by every native session adapter. */
 export interface SessionQuery {
@@ -148,15 +152,49 @@ const CursorMetaSchema = Schema.Struct({
 });
 const CursorBlobSchema = Schema.Struct({
   rowid: Schema.Number,
-  role: Schema.Union([
-    Schema.Literal("user"),
-    Schema.Literal("assistant"),
-    Schema.Literal("tool"),
-  ]),
+  role: Schema.Union([Schema.Literal("user"), Schema.Literal("assistant"), Schema.Literal("tool")]),
   content: Schema.optional(Schema.Unknown),
   id: Schema.optional(Schema.String),
 });
 type CursorBlob = typeof CursorBlobSchema.Type;
+
+const OpenCodeMessageDataSchema = Schema.Struct({
+  role: Schema.Union([Schema.Literal("user"), Schema.Literal("assistant")]),
+  summary: Schema.optional(Schema.Boolean),
+  time: Schema.optional(
+    Schema.Struct({
+      completed: Schema.optional(Schema.Number),
+    }),
+  ),
+});
+const OpenCodePartDataSchema = Schema.Struct({
+  type: Schema.String,
+  text: Schema.optional(Schema.String),
+  ignored: Schema.optional(Schema.Boolean),
+  synthetic: Schema.optional(Schema.Boolean),
+});
+
+interface OpenCodeSessionRow {
+  readonly id: string;
+  readonly directory: string;
+  readonly time_created: number;
+  readonly time_updated: number;
+}
+
+interface OpenCodeMessageRow {
+  readonly id: string;
+  readonly data: string | null;
+  readonly data_length: number;
+  readonly time_created: number;
+  readonly time_updated: number;
+}
+
+interface OpenCodePartRow {
+  readonly id: string;
+  readonly message_id: string;
+  readonly data: string | null;
+  readonly data_length: number;
+}
 
 const CURSOR_BLOB_EXPORTER = String.raw`
 import json
@@ -196,7 +234,10 @@ async function pathIsFile(path: string): Promise<boolean> {
   }
 }
 
-async function readCursorBlobs(storePath: string, signal: AbortSignal): Promise<readonly CursorBlob[]> {
+async function readCursorBlobs(
+  storePath: string,
+  signal: AbortSignal,
+): Promise<readonly CursorBlob[]> {
   return new Promise((resolve, reject) => {
     execFile(
       "python3",
@@ -221,7 +262,10 @@ async function readCursorBlobs(storePath: string, signal: AbortSignal): Promise<
   });
 }
 
-async function readCursorTranscript(locator: SessionLocator, signal: AbortSignal): Promise<Transcript> {
+async function readCursorTranscript(
+  locator: SessionLocator,
+  signal: AbortSignal,
+): Promise<Transcript> {
   const metadata = decodeJson(CursorMetaSchema, await readFile(locator.path, "utf8")) ?? {};
   const storePath = join(dirname(locator.path), "store.db");
   const rawEntries = (await pathIsFile(storePath)) ? await readCursorBlobs(storePath, signal) : [];
@@ -249,8 +293,270 @@ async function readCursorTranscript(locator: SessionLocator, signal: AbortSignal
   };
 }
 
+function openCodeLocator(databasePath: string, sessionId: string): string {
+  return `${databasePath}#session=${encodeURIComponent(sessionId)}`;
+}
+
+function openCodeSessionId(databasePath: string, locator: string): string | undefined {
+  const prefix = `${databasePath}#session=`;
+  if (!locator.startsWith(prefix)) return undefined;
+  try {
+    const value = decodeURIComponent(locator.slice(prefix.length));
+    return value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function withOpenCodeDatabase<A>(databasePath: string, run: (database: DatabaseSync) => A): A {
+  const databaseOptions: NonNullable<ConstructorParameters<typeof DatabaseSync>[1]> & {
+    readonly timeout: number;
+  } = {
+    allowExtension: false,
+    enableForeignKeyConstraints: true,
+    open: true,
+    readOnly: true,
+    timeout: 2_500,
+  };
+  const database = new DatabaseSync(databasePath, databaseOptions);
+  let transactionOpen = false;
+  try {
+    database.exec("PRAGMA query_only = ON; PRAGMA busy_timeout = 2500");
+    const queryOnly = database.prepare("PRAGMA query_only").get() as
+      | { readonly query_only?: unknown }
+      | undefined;
+    const journalMode = database.prepare("PRAGMA journal_mode").get() as
+      | { readonly journal_mode?: unknown }
+      | undefined;
+    if (queryOnly?.query_only !== 1 || String(journalMode?.journal_mode).toLowerCase() !== "wal") {
+      throw new Error("OpenCode SQLite is not configured for a read-only WAL snapshot");
+    }
+    database.exec("BEGIN DEFERRED TRANSACTION");
+    transactionOpen = true;
+    database.prepare("SELECT count(*) FROM sqlite_schema").get();
+    const result = run(database);
+    database.exec("COMMIT");
+    transactionOpen = false;
+    return result;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        database.exec("ROLLBACK");
+      } catch {
+        // Preserve the first bounded source failure.
+      }
+    }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
+function openCodeAdapter(databasePath: string): SessionAdapter {
+  const runtime = "opencode" as const;
+  return {
+    runtime,
+    root: databasePath,
+    discover: async function* (query) {
+      checkSignal(query.signal);
+      if (!(await pathIsFile(databasePath))) return;
+      const rows = withOpenCodeDatabase(
+        databasePath,
+        (database) =>
+          database
+            .prepare(
+              `SELECT id, directory, time_created, time_updated
+             FROM session
+             ORDER BY time_updated DESC, id DESC
+             LIMIT ?`,
+            )
+            .all(Math.max(0, query.maxFiles)) as unknown as readonly OpenCodeSessionRow[],
+      );
+      for (const row of rows) {
+        checkSignal(query.signal);
+        if (
+          typeof row.id !== "string" ||
+          typeof row.directory !== "string" ||
+          !Number.isSafeInteger(row.time_created) ||
+          !Number.isSafeInteger(row.time_updated)
+        ) {
+          continue;
+        }
+        yield {
+          agent: runtime,
+          path: openCodeLocator(databasePath, row.id),
+          mtimeMs: row.time_updated,
+          mtime: new Date(row.time_updated).toISOString(),
+        };
+      }
+    },
+    canRead: (path) => openCodeSessionId(databasePath, path) !== undefined,
+    read: async (locator, signal) => {
+      checkSignal(signal);
+      const sessionId = openCodeSessionId(databasePath, locator.path);
+      if (!sessionId) throw new Error("Invalid OpenCode session locator");
+      const transcript = withOpenCodeDatabase(databasePath, (database) => {
+        const session = database
+          .prepare(
+            `SELECT id, directory, time_created, time_updated
+             FROM session
+             WHERE id = ?`,
+          )
+          .get(sessionId) as unknown as OpenCodeSessionRow | undefined;
+        if (!session) throw new Error("OpenCode session not found");
+        checkSignal(signal);
+        const messages = database
+          .prepare(
+            `SELECT id,
+                    CASE
+                      WHEN length(CAST(data AS BLOB)) <= ? THEN data
+                      ELSE NULL
+                    END AS data,
+                    length(CAST(data AS BLOB)) AS data_length,
+                    time_created,
+                    time_updated
+             FROM message
+             WHERE session_id = ?
+             ORDER BY time_created, id
+             LIMIT ?`,
+          )
+          .all(
+            OPENCODE_MAX_DATA_BYTES + 1,
+            sessionId,
+            OPENCODE_MAX_MESSAGES_PER_SESSION + 1,
+          ) as unknown as readonly OpenCodeMessageRow[];
+        checkSignal(signal);
+        const parts = database
+          .prepare(
+            `SELECT id,
+                    message_id,
+                    CASE
+                      WHEN length(CAST(data AS BLOB)) <= ? THEN data
+                      ELSE NULL
+                    END AS data,
+                    length(CAST(data AS BLOB)) AS data_length
+             FROM part
+             WHERE session_id = ?
+             ORDER BY time_created, id
+             LIMIT ?`,
+          )
+          .all(
+            OPENCODE_MAX_DATA_BYTES + 1,
+            sessionId,
+            OPENCODE_MAX_PARTS_PER_SESSION + 1,
+          ) as unknown as readonly OpenCodePartRow[];
+        if (
+          messages.length > OPENCODE_MAX_MESSAGES_PER_SESSION ||
+          parts.length > OPENCODE_MAX_PARTS_PER_SESSION ||
+          messages.some(
+            (message) =>
+              !Number.isSafeInteger(message.data_length) ||
+              message.data_length < 0 ||
+              message.data === null ||
+              message.data_length > OPENCODE_MAX_DATA_BYTES,
+          ) ||
+          parts.some(
+            (part) =>
+              !Number.isSafeInteger(part.data_length) ||
+              part.data_length < 0 ||
+              part.data === null ||
+              part.data_length > OPENCODE_MAX_DATA_BYTES,
+          )
+        ) {
+          throw new Error("OpenCode session exceeds bounded reader limits");
+        }
+        const partsByMessage = new Map<string, OpenCodePartRow[]>();
+        for (const [index, part] of parts.entries()) {
+          if (index % 128 === 0) checkSignal(signal);
+          const current = partsByMessage.get(part.message_id) ?? [];
+          current.push(part);
+          partsByMessage.set(part.message_id, current);
+        }
+        const entries: TranscriptEntry[] = [];
+        let redacted = false;
+        for (const [index, message] of messages.entries()) {
+          if (index % 128 === 0) checkSignal(signal);
+          if (message.data === null)
+            throw new Error("OpenCode message exceeds bounded reader limits");
+          const data = decodeJson(OpenCodeMessageDataSchema, message.data);
+          if (!data || (data.role === "assistant" && data.summary === true)) continue;
+          if (
+            data.role === "assistant" &&
+            (!Number.isSafeInteger(data.time?.completed) || Number(data.time?.completed) < 0)
+          ) {
+            continue;
+          }
+          const visible = (partsByMessage.get(message.id) ?? []).flatMap((part) => {
+            if (part.data === null) throw new Error("OpenCode part exceeds bounded reader limits");
+            const decoded = decodeJson(OpenCodePartDataSchema, part.data);
+            if (
+              !decoded ||
+              decoded.type !== "text" ||
+              decoded.ignored === true ||
+              decoded.synthetic === true ||
+              !decoded.text?.trim()
+            ) {
+              return [];
+            }
+            return [decoded.text];
+          });
+          if (visible.length === 0) continue;
+          const protectedText = redactSecrets(visible.join("\n"));
+          redacted ||= protectedText.redacted;
+          entries.push({
+            line: entries.length + 1,
+            raw: { messageId: message.id },
+            text: protectedText.text,
+            role: data.role,
+            kind: "message",
+          });
+        }
+        return {
+          sessionId: session.id,
+          startedAt: new Date(session.time_created).toISOString(),
+          cwdKey: session.directory,
+          path: locator.path,
+          entries,
+          redacted,
+        } satisfies Transcript;
+      });
+      checkSignal(signal);
+      return transcript;
+    },
+    health: async (signal) => {
+      checkSignal(signal);
+      if (!(await pathIsFile(databasePath))) {
+        return {
+          runtime,
+          root: databasePath,
+          status: "missing",
+          detail: "SQLite store is not present",
+        };
+      }
+      try {
+        withOpenCodeDatabase(databasePath, (database) => {
+          database.prepare("SELECT id FROM session ORDER BY time_updated DESC LIMIT 1").get();
+        });
+        return {
+          runtime,
+          root: databasePath,
+          status: "healthy",
+          detail: "read-only SQLite store is readable",
+        };
+      } catch {
+        return {
+          runtime,
+          root: databasePath,
+          status: "degraded",
+          detail: "read-only SQLite store could not be queried",
+        };
+      }
+    },
+  };
+}
+
 function jsonlAdapter(
-  runtime: Exclude<SessionAgent, "cursor">,
+  runtime: Exclude<SessionAgent, "cursor" | "opencode">,
   root: string,
   matches: (name: string) => boolean,
 ): SessionAdapter {
@@ -303,15 +609,24 @@ function cursorAdapter(root: string): SessionAdapter {
 }
 
 /** Build the runtime adapter registry from the current user's native roots. */
-export function createSessionAdapters(): readonly SessionAdapter[] {
-  const home = homedir();
-  const grokHome = process.env.GROK_HOME?.trim() || join(home, ".grok");
+export function createSessionAdapters(
+  options: {
+    readonly home?: string;
+    readonly grokHome?: string;
+    readonly openCodeDatabase?: string;
+  } = {},
+): readonly SessionAdapter[] {
+  const home = options.home ?? homedir();
+  const grokHome = options.grokHome ?? process.env.GROK_HOME?.trim() ?? join(home, ".grok");
+  const openCodeDatabase =
+    options.openCodeDatabase ?? join(home, ".local/share/opencode/opencode.db");
   return [
     jsonlAdapter("pi", join(home, ".pi/agent/sessions"), (name) => name.endsWith(".jsonl")),
     jsonlAdapter("claude", join(home, ".claude/projects"), (name) => name.endsWith(".jsonl")),
     jsonlAdapter("codex", join(home, ".codex/sessions"), (name) => name.endsWith(".jsonl")),
     cursorAdapter(join(home, ".cursor/acp-sessions")),
     jsonlAdapter("grok", join(grokHome, "sessions"), (name) => name === "chat_history.jsonl"),
+    openCodeAdapter(openCodeDatabase),
   ];
 }
 

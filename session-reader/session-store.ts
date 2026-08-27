@@ -234,7 +234,7 @@ const resolvePath = Effect.fn("SessionStore.resolvePath")((idOrPath: string) =>
       if (await pathIsFile(idOrPath)) return idOrPath;
       const files = await listFiles("all", DISCOVERY_HARD_LIMIT, signal);
       const match = files.find((file) => file.path.includes(idOrPath));
-      if (!match) throw new Error(`No local Pi/Claude/Codex/Cursor/Grok transcript found for ${idOrPath}`);
+      if (!match) throw new Error(`No local Pi/Claude/Codex/Cursor/Grok/OpenCode transcript found for ${idOrPath}`);
       return match.path;
     },
     catch: (cause) => readerError("SessionStore.resolvePath", cause),

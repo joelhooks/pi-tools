@@ -6,6 +6,7 @@ export const SessionAgentSchema = Schema.Union([
   Schema.Literal("codex"),
   Schema.Literal("cursor"),
   Schema.Literal("grok"),
+  Schema.Literal("opencode"),
 ]);
 export type SessionAgent = typeof SessionAgentSchema.Type;
 

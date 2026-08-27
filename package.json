@@ -8,6 +8,9 @@
     "pi",
     "pi-coding-agent"
   ],
+  "bin": {
+    "pi-session-recall-mcp": "./session-reader/mcp-server.ts"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "@sinclair/typebox": "^0.34.33",
@@ -15,7 +18,8 @@
     "ioredis": "^5.6.1",
     "langfuse": "^3.38.6",
     "qrcode": "^1.5.4",
-    "xstate": "5.32.5"
+    "xstate": "5.32.5",
+    "zod": "4.3.6"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "~0.74.0",
@@ -46,7 +50,7 @@
   },
   "scripts": {
     "brain:check": "pi-notes brain check",
-    "test:session-reader": "node --test session-reader/capture-paths.test.ts session-reader/session-reader.test.ts",
+    "test:session-reader": "node --test session-reader/capture-paths.test.ts session-reader/session-reader.test.ts session-reader/mcp-server.test.ts",
     "typecheck": "tsc"
   },
   "devDependencies": {

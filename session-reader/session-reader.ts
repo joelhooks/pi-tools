@@ -15,6 +15,7 @@ const CHUNKS_SAFE_CONTEXT = 2;
 const CHUNKS_LARGE_CONTEXT = 10;
 const INSPECT_MAX_BEFORE = 50;
 const INSPECT_MAX_AFTER = 200;
+const EXPAND_MAX_LIMIT = 40;
 const ENGINE_LABEL = "Effect v4 + XState v5 session reader";
 
 const SessionAgentSchema = Type.Union([
@@ -23,6 +24,7 @@ const SessionAgentSchema = Type.Union([
   Type.Literal("codex"),
   Type.Literal("cursor"),
   Type.Literal("grok"),
+  Type.Literal("opencode"),
 ]);
 const SessionAgentFilterSchema = Type.Union([Type.Literal("all"), SessionAgentSchema]);
 const SessionSourceSchema = Type.Union([
@@ -160,10 +162,58 @@ async function executeOperation(
 
 export default function sessionReader(pi: ExtensionAPI): void {
   pi.registerTool({
+    name: "flowing_recall",
+    label: "Flowing Recall",
+    description:
+      "Run explicit project-scoped recall across flowing reflections, flowing observations, and curated pages. Raw sessions require a separate drill-down.",
+    parameters: Type.Object({
+      query: Type.String(),
+      project: Type.String(),
+      workstream: Type.String(),
+      limit: Type.Optional(Type.Number()),
+      include_superseded: Type.Optional(Type.Boolean()),
+      allowed_privacy: Type.Optional(
+        Type.Array(
+          Type.Union([Type.Literal("public"), Type.Literal("private"), Type.Literal("sensitive")]),
+        ),
+      ),
+    }),
+    async execute(_id, params, signal, onUpdate, ctx) {
+      const warnings: string[] = [];
+      const limit = boundedInteger(params.limit, {
+        fallback: 10,
+        min: 1,
+        max: 50,
+        label: "limit",
+        warnings,
+      });
+      const result = await executeOperation(
+        SessionOperation.Recall({
+          query: params.query,
+          project: params.project,
+          workstream: params.workstream,
+          allowedPrivacy: params.allowed_privacy ?? ["public", "private"],
+          includeSuperseded: params.include_superseded === true,
+          limits: { curated: limit, observations: limit, reflections: limit },
+          cwd: ctx.cwd,
+        }),
+        signal,
+        onUpdate,
+      );
+      if (warnings.length > 0) result.details.warnings = warnings;
+      return result;
+    },
+    renderCall(args, theme) {
+      return renderToolCall("flowing_recall", `${args.project}/${args.workstream}`, theme);
+    },
+    renderResult,
+  });
+
+  pi.registerTool({
     name: "session_search",
     label: "Session Search",
     description:
-      "Search local Pi, Claude, Codex, Cursor, and Grok transcripts through the Effect/XState session reader. Joelclaw is used only as an optional remote index adapter.",
+      "Search local Pi, Claude, Codex, Cursor, Grok, and OpenCode transcripts through the Effect/XState session reader. Use flowing_recall before raw evidence drill-down.",
     parameters: Type.Object({
       query: Type.String({ description: "Search query" }),
       agent: Type.Optional(SessionAgentFilterSchema),
@@ -196,7 +246,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
         SessionOperation.Search({
           query: params.query,
           agent: (params.agent ?? "all") as SessionAgentFilter,
-          source: (params.source ?? "both") as SessionSource,
+          source: (params.source ?? "local") as SessionSource,
           machine: params.machine ?? hostnameShort(),
           limit,
           maxFiles,
@@ -217,7 +267,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
     name: "session_capture_status",
     label: "Session Capture Status",
     description:
-      "Check native Pi, Claude, Codex, Cursor, and Grok transcript adapters plus legacy Pi/Claude/Codex capture diagnostics through the Effect/XState session reader.",
+      "Check native Pi, Claude, Codex, Cursor, Grok, and OpenCode transcript adapters plus legacy Pi/Claude/Codex capture diagnostics through the Effect/XState session reader.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal, onUpdate, ctx) {
       return executeOperation(SessionOperation.Capture({ cwd: ctx.cwd }), signal, onUpdate);
@@ -255,7 +305,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
         SessionOperation.Search({
           query: params.query ?? params.cwd_filter ?? ctx.cwd,
           agent,
-          source: (params.source ?? "both") as SessionSource,
+          source: (params.source ?? "local") as SessionSource,
           machine: params.machine ?? hostnameShort(),
           limit,
           maxFiles: DEFAULT_MAX_FILES,
@@ -350,10 +400,49 @@ export default function sessionReader(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
+    name: "session_expand",
+    label: "Session Expand",
+    description:
+      "Safely continue a bounded transcript page with an opaque cursor. Expansion never returns the full session or replaces existing context.",
+    parameters: Type.Object({
+      session_id: Type.String(),
+      cursor: Type.Optional(Type.String({ description: "Opaque next_cursor from a prior page." })),
+      direction: Type.Optional(Type.Union([Type.Literal("forward"), Type.Literal("backward")])),
+      limit: Type.Optional(Type.Number()),
+    }),
+    async execute(_id, params, signal, onUpdate) {
+      const warnings: string[] = [];
+      const limit = boundedInteger(params.limit, {
+        fallback: 12,
+        min: 1,
+        max: EXPAND_MAX_LIMIT,
+        label: "limit",
+        warnings,
+      });
+      const result = await executeOperation(
+        SessionOperation.Expand({
+          sessionId: params.session_id,
+          cursor: params.cursor,
+          direction: params.direction as "forward" | "backward" | undefined,
+          limit,
+        }),
+        signal,
+        onUpdate,
+      );
+      if (warnings.length > 0) result.details.warnings = warnings;
+      return result;
+    },
+    renderCall(args, theme) {
+      return renderToolCall("session_expand", args.session_id, theme);
+    },
+    renderResult,
+  });
+
+  pi.registerTool({
     name: "session_chunks",
     label: "Session Chunks",
     description:
-      "Find bounded transcript chunks through the Effect/XState session reader. Local is the default; non-local sources use joelclaw as an index adapter.",
+      "Find bounded local transcript chunks through the Effect/XState session reader. Non-local query transport stays disabled until joelclaw accepts stdin.",
     parameters: Type.Object({
       query: Type.String(),
       source: Type.Optional(SessionSourceSchema),
