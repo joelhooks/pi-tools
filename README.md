@@ -73,7 +73,7 @@ Primary Pi tools:
 - `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
-The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. Native evidence search requires the signed receipt from that successful recall.
+The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. If recall reports `No projection head`, it calls `discover_scopes` and retries recall with one returned exact pair instead of guessing or searching transcripts. Native evidence search requires the signed receipt from a successful recall.
 
 `pi-session-recall-mcp-http` serves Streamable HTTP for Executor. It:
 
@@ -99,7 +99,9 @@ Register `http://127.0.0.1:4792/mcp` as a remote Streamable HTTP integration in 
 
 `pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
-MCP tools: `recall`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+MCP tools: `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+
+`discover_scopes` accepts optional bounded `project_hint` and `workstream_hint`, a limit from 1 through 50 (default 10), and a required non-empty unique `allowed_privacy` grant. It returns semantic scope metadata, not raw evidence, so it neither requires nor mints an evidence receipt. Hints and the typed query travel only over child stdin. The adapter executes only the consumer-pinned standalone from its sealed v2 release manifest, rechecks file identity and mode before credential lease and spawn, leases only `flowing_memory_runtime_database_url` through the canonical secrets CLI, and gives the child a minimal environment.
 
 `recall` requires an exact persisted project/workstream scope and returns a process-bound evidence receipt. The two drill-down tools reject calls without a valid receipt, cap native scans at 200 files, and never act as initial memory search.
 
