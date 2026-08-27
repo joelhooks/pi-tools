@@ -7,11 +7,11 @@ import type { SessionOperation } from "./engine.ts";
 
 const expectedTools = [
   "recall",
-  "search_sessions",
+  "drill_down_session_evidence",
   "inspect_session",
   "expand_session",
   "session_context",
-  "session_chunks",
+  "drill_down_session_chunks",
   "capture_status",
 ];
 
@@ -68,8 +68,12 @@ describe("session recall MCP", () => {
         },
       });
       assert.equal(recalled.isError, undefined);
+      const evidenceDrilldownReceipt = (
+        recalled.structuredContent as { details?: { evidenceDrilldownReceipt?: unknown } }
+      )?.details?.evidenceDrilldownReceipt;
+      assert.equal(typeof evidenceDrilldownReceipt, "string");
       assert.equal(operations[0]._tag, "Recall");
-      if (operations[0]._tag !== "Recall") return;
+      if (operations[0]._tag !== "Recall" || typeof evidenceDrilldownReceipt !== "string") return;
       assert.deepEqual(operations[0].limits, {
         curated: 4,
         observations: 4,
@@ -77,9 +81,10 @@ describe("session recall MCP", () => {
       });
 
       await client.callTool({
-        name: "search_sessions",
+        name: "drill_down_session_evidence",
         arguments: {
           query: "exact receipt",
+          evidenceDrilldownReceipt,
           runtime: "opencode",
           limit: 2,
         },
@@ -101,9 +106,10 @@ describe("session recall MCP", () => {
       assert.equal(operations[2]._tag, "Inspect");
 
       await client.callTool({
-        name: "session_chunks",
+        name: "drill_down_session_chunks",
         arguments: {
           query: "receipt",
+          evidenceDrilldownReceipt,
           excludeCurrent: true,
           currentSessionId: "caller-session",
         },
@@ -112,6 +118,25 @@ describe("session recall MCP", () => {
       if (operations[3]._tag !== "Chunks") return;
       assert.equal(operations[3].excludeCurrent, true);
       assert.equal(operations[3].currentSessionId, "caller-session");
+    });
+  });
+
+  test("rejects broad native search without a fresh recall receipt", async () => {
+    await withClient(async (client, operations) => {
+      const result = await client.callTool({
+        name: "drill_down_session_evidence",
+        arguments: {
+          query: "broad memory query",
+          evidenceDrilldownReceipt: "not-a-valid-receipt",
+        },
+      });
+
+      assert.equal(result.isError, true);
+      assert.equal(operations.length, 0);
+      assert.equal(
+        (result.structuredContent as { details?: { code?: unknown } })?.details?.code,
+        "recall-required-before-raw-evidence",
+      );
     });
   });
 });

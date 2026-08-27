@@ -9,10 +9,12 @@ Use transcripts as receipts. Do not guess from memory when session history can a
 
 ## Source order
 
-1. Use flowing recall for vague prior context, project decisions, or "what did we decide?"
+1. Use flowing recall for every memory request.
 2. Read supporting flowing observations and their evidence references.
-3. Search native sessions only when exact transcript evidence is needed.
+3. Search native sessions only when exact transcript evidence remains necessary.
 4. Verify capture health before claiming Central has the runtime history.
+
+Flowing scope is exact. `project` is the persisted repository identity, commonly `owner.repo`. `workstream` is the persisted branch or bookmark, commonly `main` or `default`. A `No projection head` result means the scope is wrong or empty. Correct the scope. Do not fall back to raw transcripts.
 
 Flowing recall has exactly three lanes:
 
@@ -25,7 +27,7 @@ Never merge lane scores. Raw transcripts are explicit drill-down evidence, not a
 ## Pi tools
 
 - `flowing_recall` — exact project/workstream semantic recall.
-- `session_search` — bounded local native session search. Remote search stays disabled until the CLI accepts stdin.
+- `session_search` — compatibility-only local evidence search. Never use it as memory recall. Remote search stays disabled until the CLI accepts stdin.
 - `session_context` — bounded structured extraction from one session.
 - `session_inspect` — exact line evidence around one regex.
 - `session_expand` — bounded continuation through an opaque cursor.
@@ -49,12 +51,12 @@ Executor owns the saved `memory` MCP connection. Use one `executor_execute` call
 
 ```js
 const recallMatches = await tools.search({ query: "recall exact project workstream", limit: 20 });
-const sessionMatches = await tools.search({ query: "search native sessions", limit: 20 });
+const sessionMatches = await tools.search({ query: "drill down session evidence", limit: 20 });
 const recallTool = recallMatches.items.find(
   (item) => item.path.startsWith("memory.") && item.name === "recall",
 );
 const searchTool = sessionMatches.items.find(
-  (item) => item.path.startsWith("memory.") && item.name === "search_sessions",
+  (item) => item.path.startsWith("memory.") && item.name === "drill_down_session_evidence",
 );
 if (!recallTool || !searchTool) return { error: "memory tools unavailable" };
 
@@ -62,13 +64,18 @@ const recall = await tools[recallTool.path]({ query, project, workstream, limit:
 if (!recall.ok) return recall;
 
 // Drill into raw sessions only when recall needs exact evidence.
+const receipt = recall.data.structuredContent?.details?.evidenceDrilldownReceipt;
+if (typeof receipt !== "string") return { error: "recall did not authorize evidence drill-down" };
 const sessions = await tools[searchTool.path]({
   query: evidencePhrase,
+  evidenceDrilldownReceipt: receipt,
   runtime: "all",
   limit: 5,
 });
 return { recall: recall.data, sessions: sessions.ok ? sessions.data : sessions };
 ```
+
+The evidence receipt is process-bound, expires after ten minutes, and proves a successful recall happened first. Broad native search is no longer part of the MCP surface.
 
 Do not pass a private query in argv. Executor sends MCP arguments over authenticated loopback HTTP. Direct CLI requests use stdin or a mode-0600 request file.
 
