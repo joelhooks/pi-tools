@@ -1,6 +1,8 @@
+import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import * as os from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { Context, Effect, Layer, Schema } from "effect";
 import {
   type CaptureFileStatus,
@@ -12,11 +14,13 @@ import {
   type LocalSessionHit,
   LocalSessionHitSchema,
   matchesQuery,
+  parseTranscriptLine,
   queryTerms,
   type SessionAgent,
   type SessionAgentFilter,
   type SessionFile,
   SessionReaderError,
+  sessionMetaFromPath,
   type Transcript,
   TranscriptSchema,
 } from "./domain.ts";
@@ -91,14 +95,14 @@ async function pathIsFile(path: string): Promise<boolean> {
 
 async function listFiles(
   agent: SessionAgentFilter,
-  maxFilesPerRoot: number,
+  maxFiles: number,
   signal: AbortSignal,
 ): Promise<readonly SessionFile[]> {
   const selected = agent === "all" ? adapters : adapters.filter((adapter) => adapter.runtime === agent);
   const groups = await Promise.all(
     selected.map(async (adapter) => {
       const files: SessionFile[] = [];
-      for await (const file of adapter.discover({ maxFiles: maxFilesPerRoot, signal })) {
+      for await (const file of adapter.discover({ maxFiles, signal })) {
         files.push(file);
       }
       return files;
@@ -107,7 +111,7 @@ async function listFiles(
   return groups
     .flat()
     .sort((left, right) => right.mtimeMs - left.mtimeMs)
-    .slice(0, DISCOVERY_HARD_LIMIT);
+    .slice(0, Math.min(maxFiles, DISCOVERY_HARD_LIMIT));
 }
 
 function readSessionFile(
@@ -125,6 +129,81 @@ function readSessionFile(
   return adapter.read(locator, signal);
 }
 
+interface ScanJsonlLinesInput {
+  readonly file: SessionFile;
+  readonly query: string;
+  readonly terms: readonly string[];
+  readonly lines: AsyncIterable<string>;
+  readonly signal: AbortSignal;
+}
+
+export async function scanJsonlLines({
+  file,
+  query,
+  terms,
+  lines,
+  signal,
+}: ScanJsonlLinesInput): Promise<LocalSessionHit | undefined> {
+  const snippets: string[] = [];
+  const matchedTerms = new Set<string>();
+  const maximumTermCount = new Set(terms).size;
+  let directMatch = false;
+  let lineNumber = 0;
+
+  for await (const line of lines) {
+    if (signal.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
+    lineNumber += 1;
+    const entry = parseTranscriptLine(line, lineNumber).entry;
+    if (!entry) continue;
+
+    const lower = entry.text.toLowerCase();
+    for (const term of terms) {
+      if (lower.includes(term)) matchedTerms.add(term);
+    }
+    if (matchesQuery(entry.text, query)) {
+      directMatch = true;
+      if (snippets.length < 3) {
+        snippets.push(compactText(entry.text, 320) ?? entry.text.slice(0, 320));
+      }
+    }
+
+    if (directMatch && matchedTerms.size === maximumTermCount && snippets.length === 3) break;
+  }
+
+  const pathMatch = matchesQuery(file.path, query);
+  if (!directMatch && matchedTerms.size === 0 && !pathMatch) return undefined;
+  const metadata = sessionMetaFromPath(file.path);
+  return {
+    agent: file.agent,
+    sessionId: metadata.sessionId,
+    startedAt: metadata.startedAt,
+    cwdKey: metadata.cwdKey,
+    path: file.path,
+    mtime: file.mtime,
+    snippets: snippets.length > 0 ? snippets : [compactText(file.path, 320) ?? file.path],
+    score: matchedTerms.size + (directMatch ? 1 : 0) + (pathMatch ? 1 : 0),
+  };
+}
+
+async function scanJsonlSessionFile(
+  file: SessionFile,
+  query: string,
+  terms: readonly string[],
+  signal: AbortSignal,
+): Promise<LocalSessionHit | undefined> {
+  const stream = createReadStream(file.path, { encoding: "utf8" });
+  const onAbort = () => stream.destroy(new Error("Operation aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  try {
+    return await scanJsonlLines({ file, query, terms, lines, signal });
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    lines.close();
+    stream.destroy();
+  }
+}
+
 async function scanSessionFile(
   file: SessionFile,
   query: string,
@@ -133,6 +212,15 @@ async function scanSessionFile(
 ): Promise<LocalSessionHit | undefined> {
   const adapter = adapterFor(file.agent);
   if (!adapter) return undefined;
+
+  if (file.path.endsWith(".jsonl")) {
+    try {
+      return await scanJsonlSessionFile(file, query, terms, signal);
+    } catch (cause) {
+      if (signal.aborted) throw cause;
+      return undefined;
+    }
+  }
 
   const snippets: string[] = [];
   const matchedTerms = new Set<string>();

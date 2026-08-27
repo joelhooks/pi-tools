@@ -148,6 +148,25 @@ bounded inspect matches: 4
 
 The service installer validates source and credential shape before mutation. It stages files, waits for unload, checks health, and restores the prior service on failed activation.
 
+## Search timeout regression
+
+A broad native-session query repeatedly hit the MCP client's 60-second timeout. The newest search batch included JSONL transcripts up to 203 MiB. The reader streamed each file but retained every parsed entry before scoring it, which caused high heap use and long garbage-collection stalls.
+
+The JSONL search path now scores entries while streaming. It stops after three bounded snippets reach the file's maximum possible score. Cursor and OpenCode keep their existing bounded database adapters.
+
+Live read-only benchmark against the same corpus:
+
+```text
+maxFiles  matching query before  matching query after
+200       > 60 seconds           867 ms
+500       > 60 seconds           423 ms
+1000      > 60 seconds           394 ms
+```
+
+A no-match scan across the full 1,000-file bound completed in 15.5 seconds. The previous code treated `maxFiles` as a per-adapter limit and could scan up to six times the requested total. The fixed reader applies the bound after merging adapter results.
+
+The regression test uses an async line source that throws on a fourth read. Search returns after the third maximum-scoring snippet, proving the bounded stop rather than relying on timing alone.
+
 ## Rollback
 
 1. Remove the saved memory integration from Executor.
