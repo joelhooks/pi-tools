@@ -49,12 +49,12 @@ Executor owns the saved `memory` MCP connection. Use one `executor_execute` call
 
 ```js
 const found = await tools.search({
-  namespace: "memory",
-  query: "recall search sessions inspect evidence",
-  limit: 20,
+  query: "flowing recall search native sessions inspect evidence",
+  limit: 30,
 });
-const recallTool = found.items.find((item) => item.name === "recall");
-const searchTool = found.items.find((item) => item.name === "search_sessions");
+const memoryTools = found.items.filter((item) => item.path.startsWith("memory."));
+const recallTool = memoryTools.find((item) => item.name === "recall");
+const searchTool = memoryTools.find((item) => item.name === "search_sessions");
 if (!recallTool || !searchTool) return { error: "memory tools unavailable" };
 
 const recall = await tools[recallTool.path]({ query, project, workstream, limit: 10 });
