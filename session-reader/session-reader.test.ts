@@ -13,6 +13,7 @@ import {
   redactSecrets,
   sessionMetaFromPath,
   redactUnknown,
+  type SessionFile,
 } from "./domain.ts";
 import { SessionOperation, SessionOperationSchema } from "./engine.ts";
 import { FlowingRecallError, runFlowingRecall } from "./flowing-recall.ts";
@@ -21,6 +22,7 @@ import { inspectDetails, renderCaptureHealth, renderInspect } from "./presenter.
 import { createSessionAdapters } from "./adapters.ts";
 import { assessCaptureHealth, type CaptureFileStatus, capturePathSpecs } from "./capture-paths.ts";
 import sessionReader from "./session-reader.ts";
+import { scanJsonlLines } from "./session-store.ts";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -163,6 +165,39 @@ async function transcriptFixture(): Promise<string> {
 }
 
 describe("session reader domain", () => {
+  test("stops a JSONL search after the maximum-scoring evidence is bounded", async () => {
+    let linesRead = 0;
+    const lines = async function* () {
+      for (let index = 0; index < 3; index += 1) {
+        linesRead += 1;
+        yield JSON.stringify({
+          type: "message",
+          message: { role: "assistant", content: `gateway evidence ${index}` },
+        });
+      }
+      linesRead += 1;
+      throw new Error("search read beyond its bounded evidence");
+    };
+    const file = {
+      agent: "pi",
+      path: "/tmp/2026-08-27T00-00-00-000Z_session-search.jsonl",
+      mtime: "2026-08-27T00:00:00.000Z",
+      mtimeMs: 1_700_000_000_000,
+    } satisfies SessionFile;
+
+    const hit = await scanJsonlLines({
+      file,
+      query: "gateway",
+      terms: ["gateway"],
+      lines: lines(),
+      signal: new AbortController().signal,
+    });
+
+    assert.equal(linesRead, 3);
+    assert.equal(hit?.snippets.length, 3);
+    assert.equal(hit?.score, 2);
+  });
+
   test("deduplicates overlapping inspect windows and caps output", async () => {
     const path = await transcriptFixture();
     const raw = await readFile(path, "utf8");
