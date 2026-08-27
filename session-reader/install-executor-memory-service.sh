@@ -59,7 +59,7 @@ case "${1:-}" in
 #!/bin/sh
 set -eu
 TOKEN="\$("$secrets_bin" lease "$secret_name" --ttl 24h)"
-exec env NODE_ENV=production SESSION_RECALL_MCP_TOKEN="\$TOKEN" SESSION_RECALL_MCP_PORT=4792 "$node_bin" "$server_source"
+exec env NODE_ENV=production PATH="$HOME/.local/bin:$HOME/.local/share/fnm/aliases/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" SESSION_RECALL_MCP_TOKEN="\$TOKEN" SESSION_RECALL_MCP_PORT=4792 "$node_bin" "$server_source"
 EOF
     chmod 700 "$wrapper_stage"
     cat >"$plist_stage" <<EOF
