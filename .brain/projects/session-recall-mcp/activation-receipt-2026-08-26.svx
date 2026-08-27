@@ -1,0 +1,127 @@
+---
+title: "Session Recall MCP Activation"
+type: "receipt"
+status: "active"
+privacy: "private"
+created_at: "2026-08-26"
+subject: "./session-recall-mcp-brief.svx"
+tags:
+  - memory
+  - sessions
+  - mcp
+  - code-mode
+---
+
+# Session Recall MCP Activation
+
+## Source
+
+Published implementation merge:
+
+```text
+joelhooks/pi-tools@e14254261baeb2a0fa5ad57930035160c7f891b5
+```
+
+The active clean release worktree is pinned to that merge. The dirty primary `pi-tools` checkout was not changed.
+
+## Activated surfaces
+
+Pi settings now load the clean release package. Fresh Pi process inspection found these direct compatibility tools from that exact source:
+
+```text
+flowing_recall
+session_search
+session_capture_status
+sessions
+session_context
+session_inspect
+session_expand
+session_chunks
+session_tasks
+```
+
+The shared MCP config now contains a lazy local `memory` stdio server with direct tools disabled. Its seven proxy tools are:
+
+```text
+recall
+search_sessions
+inspect_session
+expand_session
+session_context
+session_chunks
+capture_status
+```
+
+The server is read-only. Native session search is local-only. Remote session query transport fails closed until `joelclaw sessions` accepts stdin or a private request file.
+
+## Code Mode proof
+
+A fresh no-session Pi RPC process loaded only `mcp` and `mcpScript`. The prompt entered through RPC stdin, not argv.
+
+The run performed:
+
+1. one `mcp` connection call for the `memory` server;
+2. one `mcpScript` call;
+3. `memory_recall`;
+4. `memory_search_sessions`;
+5. `memory_inspect_session`.
+
+Metadata-only result:
+
+```text
+mcp calls: 1
+mcp errors: 0
+mcpScript calls: 1
+mcpScript errors: 0
+recall lane tags: 3 x RecallLaneAvailableV1
+session hits: 1
+inspect matches: 3
+```
+
+The receipt records no query, summary, transcript text, path, session ID, or raw MCP body.
+
+## Runtime coverage
+
+Native adapters now cover:
+
+```text
+pi
+claude
+codex
+cursor
+grok
+opencode
+```
+
+The OpenCode adapter reads the live SQLite store with query-only WAL transactions. It excludes summary and incomplete assistant messages. Per-session message, part, and UTF-8 byte bounds fail closed before oversized bodies return from SQLite.
+
+## Verification
+
+- `npm run test:session-reader`: 25 passed, 0 failed.
+- `npm run typecheck`: passed.
+- `pi-notes brain check`: 41 pages, passed.
+- `git diff --check`: passed.
+- Fresh Pi package/source inspection: passed.
+- Live stdio MCP recall, OpenCode search, and inspect smoke: passed.
+- Independent final review: clean, zero findings.
+
+## Capture delivery remains separate
+
+Current Central health routes responded `200`. Session capture still reports queued files:
+
+```text
+pi canonical outbox: 72
+claude-code canonical outbox: 3
+codex canonical outbox: 0
+legacy ambiguous outbox: 374
+```
+
+A read-only replay preflight stopped on an existing byte-range mismatch. No outbox file was replayed, deleted, moved, rewritten, or quarantined. Archive repair remains a separate reviewed production operation.
+
+## Rollback
+
+1. Remove the `memory` entry from the shared MCP config.
+2. Point Pi settings back to the prior clean package source.
+3. Restart or reload Pi.
+
+Rollback does not alter native transcripts, accepted Runs, flowing records, Brain pages, outboxes, or capture state.
