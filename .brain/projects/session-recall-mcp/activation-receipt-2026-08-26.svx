@@ -118,10 +118,40 @@ legacy ambiguous outbox: 374
 
 A read-only replay preflight stopped on an existing byte-range mismatch. No outbox file was replayed, deleted, moved, rewritten, or quarantined. Archive repair remains a separate reviewed production operation.
 
+## Executor move
+
+Published transport and activation fixes:
+
+```text
+79d4684017dca479d687ec1aace74e4032609fb1
+15899f01ac3ee47d6638d3c28e6aec2ae2a6db6f
+f7651e23d1ff61e974c839ba2e0d4916470e1cbd
+0bcab65a93e1a48e3e0ffbac4d593302e5e454ce
+```
+
+The active MCP catalog owner is now Executor. The direct `memory` entry was removed from the harness MCP config.
+
+Executor ingress itself requires no token. The nested memory endpoint is a separate authenticated loopback connection. Its credential lives in the local secret store and never enters source, argv, logs, or receipts.
+
+Activation proof:
+
+```text
+saved connection: healthy
+produced tools: 7
+fresh harness MCP calls: 2
+fresh harness MCP errors: 0
+recall lane tags: 3 x RecallLaneAvailableV1
+native session hits: 1
+bounded inspect matches: 4
+```
+
+The service installer validates source and credential shape before mutation. It stages files, waits for unload, checks health, and restores the prior service on failed activation.
+
 ## Rollback
 
-1. Remove the `memory` entry from the shared MCP config.
-2. Point Pi settings back to the prior clean package source.
-3. Restart or reload Pi.
+1. Remove the saved memory integration from Executor.
+2. Stop the loopback memory service.
+3. Restore the prior direct stdio MCP config and clean package source.
+4. Restart or reload the harness.
 
 Rollback does not alter native transcripts, accepted Runs, flowing records, Brain pages, outboxes, or capture state.
