@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import type { Evidence, Extraction, InspectResult, LocalSessionHit } from "./domain.ts";
 import { compactText } from "./domain.ts";
+import type { ComposedRecallResultBoundary } from "./flowing-recall.ts";
 import type { JoelclawResult } from "./joelclaw-index.ts";
 import type { CaptureFileStatus, CaptureHealth } from "./capture-paths.ts";
 import type { AdapterHealth } from "./adapters.ts";
@@ -122,6 +123,88 @@ export function inspectDetails(result: InspectResult): Record<string, unknown> {
   };
 }
 
+/** A bounded continuation page for safe transcript expansion. */
+export interface ExpansionPage {
+  readonly sessionId?: string;
+  readonly startedAt?: string;
+  readonly cwdKey?: string;
+  readonly path: string;
+  readonly direction: "forward" | "backward";
+  readonly offset: number;
+  readonly totalEntries: number;
+  readonly entries: readonly Evidence[];
+  readonly nextCursor?: string;
+}
+
+/** Render one page without ever emitting the complete transcript. */
+export function renderExpansion(page: ExpansionPage): string {
+  return capText(
+    [
+      "# Session expansion",
+      "Bounded continuation page. Existing context is preserved by the opaque cursor.",
+      `- session: ${page.sessionId ?? "unknown"}`,
+      `- path: ${page.path}`,
+      `- direction: ${page.direction}`,
+      `- entries: ${page.entries.length} of ${page.totalEntries}`,
+      `- offset: ${page.offset}`,
+      "",
+      ...(page.entries.length > 0
+        ? page.entries.map(evidenceLine)
+        : ["- no more transcript entries"]),
+      "",
+      page.nextCursor ? "Next page available via next_cursor in details." : "End of transcript.",
+    ].join("\n"),
+  );
+}
+
+export function expansionDetails(page: ExpansionPage): Record<string, unknown> {
+  return {
+    sessionId: page.sessionId,
+    startedAt: page.startedAt,
+    cwdKey: page.cwdKey,
+    path: page.path,
+    direction: page.direction,
+    offset: page.offset,
+    returnedEntries: page.entries.length,
+    totalEntries: page.totalEntries,
+    hasMore: Boolean(page.nextCursor),
+    nextCursor: page.nextCursor,
+  };
+}
+
+export function renderFlowingRecall(result: ComposedRecallResultBoundary): string {
+  const lanes = [
+    result.lanes.flowingReflections,
+    result.lanes.flowingObservations,
+    result.lanes.curatedPages,
+  ] as const;
+  const lines = [
+    "# Flowing recall",
+    "Canonical lane order is preserved. Scores are never compared across lanes.",
+  ];
+  for (const lane of lanes) {
+    lines.push("", `## ${lane.lane}`);
+    if (lane._tag === "RecallLaneUnavailableV1") {
+      lines.push(`- unavailable: ${lane.code}`);
+      continue;
+    }
+    if (lane.items.length === 0) {
+      lines.push("- no matching items");
+      continue;
+    }
+    for (const [index, item] of lane.items.entries()) {
+      const record = isRecord(item) ? item : {};
+      const title = compactText(record.title, ENTRY_PREVIEW_CHARS) ?? `item ${index + 1}`;
+      const summary = compactText(record.summary, ENTRY_PREVIEW_CHARS);
+      const evidenceCount = Array.isArray(record.evidenceIds) ? record.evidenceIds.length : 0;
+      lines.push(
+        `- ${index + 1}. ${title}${summary ? ` — ${summary}` : ""} (evidence: ${evidenceCount})`,
+      );
+    }
+  }
+  return capText(lines.join("\n"));
+}
+
 export function renderLocalHits(hits: readonly LocalSessionHit[]): string {
   if (hits.length === 0) return "No local transcript matches found.";
   return hits
@@ -180,7 +263,9 @@ export function renderCaptureHealth(health: CaptureHealth): string {
 
 export function renderAdapterHealth(adapters: readonly AdapterHealth[]): string {
   return adapters
-    .map((adapter) => `- ${adapter.runtime}: ${adapter.status} — ${adapter.detail} (${adapter.root})`)
+    .map(
+      (adapter) => `- ${adapter.runtime}: ${adapter.status} — ${adapter.detail} (${adapter.root})`,
+    )
     .join("\n");
 }
 

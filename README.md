@@ -1,6 +1,6 @@
 ```
     🔧
-   /|\ 
+   /|\
   / | \
  /  |  \
 /___🤖__\
@@ -23,16 +23,16 @@ pi config  # enable/disable individual extensions
 
 ## Extensions
 
-| Extension | What |
-|-----------|------|
-| `repo-autopsy` 🔬 | Clone GitHub repos, analyze them, and add active dependency source mirrors under `.agent_sources/` |
-| `secrets` 🛡️ | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
-| `mcp-bridge` 🌉 | Connect to any remote MCP server with OAuth — auto-registers tools into pi |
-| `session-reader` 📖 | Pi/Claude/Codex session recovery: joelclaw pointers first, local transcript receipts second |
-| `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name` |
-| `aliases` 🚪 | `/quit` and `/q` → `/exit` |
-| `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback |
-| `shortlink-qr` 🔗 | Create joel.dev shortlinks, generate HiDPI QR PNG/SVG assets, push via ShitRat, and record local Brain resources |
+| Extension           | What                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `repo-autopsy` 🔬   | Clone GitHub repos, analyze them, and add active dependency source mirrors under `.agent_sources/`                              |
+| `secrets` 🛡️        | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
+| `mcp-bridge` 🌉     | Connect to any remote MCP server with OAuth — auto-registers tools into pi                                                      |
+| `session-reader` 📖 | Flowing recall plus bounded Pi/Claude/Codex/Cursor/Grok/OpenCode transcript evidence                                            |
+| `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name`                                                                     |
+| `aliases` 🚪        | `/quit` and `/q` → `/exit`                                                                                                      |
+| `linear-tracker` 🔒 | Resolve project-local issue tracker policy and safely publish Linear issues with verified readback                              |
+| `shortlink-qr` 🔗   | Create joel.dev shortlinks, generate HiDPI QR PNG/SVG assets, push via ShitRat, and record local Brain resources                |
 
 The herdr turn-ping extension and wait CLI now live in [joelhooks/herdr-pings](https://github.com/joelhooks/herdr-pings).
 
@@ -49,6 +49,7 @@ This repo keeps the current Pi source mirrored at `.agent_sources/github.com/ear
 Project-local issue tracker resolver for agents that want to publish PRDs/issues. Linear is only allowed when local policy says Linear, a team association exists, and auth is available. Global MCP/auth is capability, not routing.
 
 Tools:
+
 - `linear_tracker_resolve` — reads nearest project policy and returns `linear_direct`, `linear_mcp`, `payload_only`, `not_linear`, or `unknown`
 - `linear_tracker_create_issue` — creates one Linear issue via direct API auth and verifies readback
 - `linear_tracker_create_issues` — creates dependency-ordered issue batches and verifies each created issue
@@ -58,30 +59,41 @@ Policy lives in `AGENTS.md`, `CLAUDE.md`, `docs/agents/issue-tracker.md`, or `.p
 
 ## session-reader
 
-`session-reader` is Pi-first session recovery. It asks `joelclaw session` for cross-machine/index pointers, then digs into local Pi/Claude/Codex JSONL transcripts for details when available. `joelclaw` is the backplane and backup; local transcript files are still the source of truth.
+`session-reader` separates semantic recall from raw evidence. `flowing_recall` returns the canonical reflection, observation, and curated-page lanes. Native adapters then read bounded Pi, Claude, Codex, Cursor, Grok, and OpenCode sessions only when exact transcript evidence is needed. `joelclaw` owns flowing recall; native transcript stores remain immutable evidence.
 
 Use `/skill:session-search` for the operating workflow.
 
-Primary tools:
+Primary Pi tools:
 
-- `session_search` — search joelclaw pointers, then local transcript details
-- `session_capture_status` — verify Pi/Claude/Codex capture state on this machine
+- `flowing_recall` — explicit project/workstream recall with three separate lanes
+- `session_search` — search bounded local native transcript details
+- `session_capture_status` — verify native adapters and Pi/Claude/Codex delivery state
 - `session_context` — bounded extraction for a session id or transcript path
 - `session_inspect` — deterministic line inspection around a regex
+- `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
+
+The same read-only surface is available as the `pi-session-recall-mcp` stdio server. MCP is the preferred cross-agent delivery boundary. Pi's `mcpScript` Code Mode can call `recall`, choose a native session, then call `inspect_session` or `expand_session` without loading every memory schema into the prompt.
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "node",
+      "args": ["/absolute/path/to/pi-tools/session-reader/mcp-server.ts"],
+      "lifecycle": "lazy"
+    }
+  }
+}
+```
+
+MCP tools: `recall`, `search_sessions`, `inspect_session`, `expand_session`, `session_context`, `session_chunks`, and `capture_status`.
 
 Still removed:
 
 - background reader-agent spawning
 
-Use the CLI directly when possible:
-
-```bash
-joelclaw session search "<query>" --source both --machine "$(hostname -s)" --limit 5 --extract
-joelclaw session extract <session-id-or-path> --query "<topic>" --format markdown
-joelclaw session inspect <session-id-or-path> --around "<regex>" --before 20 --after 80
-joelclaw session chunks "<query>" --source local --machine "$(hostname -s)" --limit 5 --context-before 0 --context-after 0
-```
+The native reader stays local-only because the current `joelclaw sessions` CLI accepts query text only in argv. Do not route private search text through that contract. Flowing recall uses the typed stdin request boundary.
 
 Pi `session_chunks` wrapper safety defaults:
 
@@ -134,8 +146,8 @@ shortlink_qr({
   url: "https://x.com/Vtrivedy10/status/2031408954517971368",
   title: "Viv harness engineering article",
   push: true,
-  background: "transparent"
-})
+  background: "transparent",
+});
 ```
 
 Outputs:
