@@ -48,13 +48,14 @@ opencode
 Executor owns the saved `memory` MCP connection. Use one `executor_execute` call for multi-step recall and evidence work. Inside Executor, discover exact paths before calling them:
 
 ```js
-const found = await tools.search({
-  query: "flowing recall search native sessions inspect evidence",
-  limit: 30,
-});
-const memoryTools = found.items.filter((item) => item.path.startsWith("memory."));
-const recallTool = memoryTools.find((item) => item.name === "recall");
-const searchTool = memoryTools.find((item) => item.name === "search_sessions");
+const recallMatches = await tools.search({ query: "recall exact project workstream", limit: 20 });
+const sessionMatches = await tools.search({ query: "search native sessions", limit: 20 });
+const recallTool = recallMatches.items.find(
+  (item) => item.path.startsWith("memory.") && item.name === "recall",
+);
+const searchTool = sessionMatches.items.find(
+  (item) => item.path.startsWith("memory.") && item.name === "search_sessions",
+);
 if (!recallTool || !searchTool) return { error: "memory tools unavailable" };
 
 const recall = await tools[recallTool.path]({ query, project, workstream, limit: 10 });
