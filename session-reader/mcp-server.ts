@@ -170,7 +170,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
       instructions: [
         "Use recall for every memory request. It searches distilled reflections, observations, and curated pages.",
         "Recall scope is exact: project is usually owner.repo and workstream is usually main, default, or the current branch.",
-        "Use one to three concrete query terms. Extra terms narrow flowing results with AND semantics.",
+        "Prefer one or two concrete query terms. Exact two-term matches rank first; three or more terms require every term.",
         "If recall reports No projection head, correct the scope instead of searching transcripts.",
         "Keep the three lanes in canonical order and never compare scores across them.",
         "Raw transcripts are evidence, never a recall lane.",
@@ -192,7 +192,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
           .string()
           .min(1)
           .max(1_000)
-          .describe("One to three concrete terms. Extra terms narrow flowing results with AND semantics."),
+          .describe("Prefer one or two concrete terms. Exact two-term matches rank first; three or more terms require every term."),
         project: z
           .string()
           .min(1)
