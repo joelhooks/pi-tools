@@ -127,6 +127,7 @@ Published transport and activation fixes:
 15899f01ac3ee47d6638d3c28e6aec2ae2a6db6f
 f7651e23d1ff61e974c839ba2e0d4916470e1cbd
 0bcab65a93e1a48e3e0ffbac4d593302e5e454ce
+b55c3f0f2169436a5c5ee90f0f418096da498392
 ```
 
 The active MCP catalog owner is now Executor. The direct `memory` entry was removed from the harness MCP config.
