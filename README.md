@@ -73,7 +73,7 @@ Primary Pi tools:
 - `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
-The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. Native evidence search requires the signed receipt from that successful recall.
+The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. If recall reports `No projection head`, it calls `discover_scopes` and retries recall with one returned exact pair instead of guessing or searching transcripts. Native evidence search requires the signed receipt from a successful recall.
 
 `pi-session-recall-mcp-http` serves Streamable HTTP for Executor. It:
 
@@ -97,9 +97,36 @@ curl --fail --silent http://127.0.0.1:4792/healthz
 
 Register `http://127.0.0.1:4792/mcp` as a remote Streamable HTTP integration in Executor. Use Executor's credential handoff for the `Authorization: Bearer` value. Never put the token in a prompt, shell argv, source file, shared MCP config, or Executor integration metadata.
 
+### Root-owned scope discovery release
+
+Production scope discovery trusts only this exact parallel release:
+
+```text
+/Library/Application Support/JoelClaw/flowing-memory/releases/20260827-05d92ead-scope-v1
+```
+
+The adapter fails before credential lease until that hierarchy exists with uid `0`, immutable `0555` directories, a `0444` manifest, and a `0555` executable. It never falls back to the user-owned release under `~/.joelclaw`.
+
+After the release and this consumer have passed review, the root-copy operator can install the already-reviewed source release. Do not run this during build or review:
+
+```bash
+sudo session-reader/install-scope-discovery-release.sh \
+  /absolute/path/to/reviewed/20260827-05d92ead-scope-v1
+```
+
+The installer leaves the user release in place, verifies the source and staged copy, and creates the root-owned release without changing the active flowing-memory host release. Its immutable inputs are:
+
+- manifest SHA-256 `a5d2a737c7dd558ff3e3566646b85d43c2ce5514dee17c4bb09405b79ffcb998`, 349 bytes;
+- source commit `05d92eadb5091113c5fc648e95ced36eb5fb8f39` from that pinned manifest;
+- artifact SHA-256 `62922264b9f27df3ad9c18c095dabf3dd55477859522739ee396b7de78b3b6cf`, 74,988,002 bytes.
+
+After installation, restart the user LaunchAgent and run the read-only scope-discovery canary. A failed hierarchy, owner, mode, size, source, or digest proof remains a hard `scope-discovery-unavailable` result.
+
 `pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
-MCP tools: `recall`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+MCP tools: `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+
+`discover_scopes` accepts optional bounded `project_hint` and `workstream_hint`, a limit from 1 through 50 (default 10), and a required non-empty unique `allowed_privacy` grant. It returns semantic scope metadata, not raw evidence, so it neither requires nor mints an evidence receipt. Hints and the typed query travel only over child stdin. The adapter executes only the consumer-pinned standalone under the root-owned immutable hierarchy, re-proves every managed directory plus exact manifest and artifact owner, type, mode, size, identity, source, and digest before credential lease and immediately before spawn, leases only `flowing_memory_runtime_database_url` through the canonical secrets CLI, rejects any producer stderr byte, and gives the child a minimal environment.
 
 `recall` requires an exact persisted project/workstream scope and returns a process-bound evidence receipt. The two drill-down tools reject calls without a valid receipt, cap native scans at 200 files, and never act as initial memory search.
 

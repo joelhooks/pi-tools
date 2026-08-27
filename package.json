@@ -52,7 +52,7 @@
   },
   "scripts": {
     "brain:check": "pi-notes brain check",
-    "test:session-reader": "node --test session-reader/capture-paths.test.ts session-reader/session-reader.test.ts session-reader/mcp-server.test.ts session-reader/mcp-http-server.test.ts",
+    "test:session-reader": "node --test session-reader/capture-paths.test.ts session-reader/session-reader.test.ts session-reader/scope-discovery.test.ts session-reader/mcp-server.test.ts session-reader/mcp-http-server.test.ts",
     "typecheck": "tsc"
   },
   "devDependencies": {

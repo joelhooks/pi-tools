@@ -6,11 +6,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createSessionRecallMcpHttpApp } from "./mcp-http-server.ts";
 
-const token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const token =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-async function closeServer(server: ReturnType<typeof createServer>): Promise<void> {
+async function closeServer(
+  server: ReturnType<typeof createServer>,
+): Promise<void> {
   await new Promise<void>((resolveClose, rejectClose) => {
-    server.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
+    server.close((error) =>
+      error === undefined ? resolveClose() : rejectClose(error),
+    );
   });
 }
 
@@ -25,6 +30,14 @@ describe("session recall MCP HTTP transport", () => {
         result: {
           text: `${operation._tag} complete`,
           details: { ok: true, operation: operation._tag },
+        },
+      }),
+      scopeDiscoveryRunner: async () => ({
+        status: "succeeded",
+        result: {
+          _tag: "ScopeDiscoveryResultV1",
+          schemaVersion: 1,
+          scopes: [],
         },
       }),
     });
@@ -47,7 +60,10 @@ describe("session recall MCP HTTP transport", () => {
         body: "{",
       });
       assert.equal(unauthorized.status, 401);
-      assert.doesNotMatch(await unauthorized.text(), /SyntaxError|node_modules|mcp-http-server/u);
+      assert.doesNotMatch(
+        await unauthorized.text(),
+        /SyntaxError|node_modules|mcp-http-server/u,
+      );
 
       const malformed = await fetch(`${base}/mcp`, {
         method: "POST",
@@ -64,10 +80,16 @@ describe("session recall MCP HTTP transport", () => {
         id: null,
       });
 
-      const client = new Client({ name: "executor-memory-test", version: "1.0.0" });
-      const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
-        requestInit: { headers: { authorization: `Bearer ${token}` } },
+      const client = new Client({
+        name: "executor-memory-test",
+        version: "1.0.0",
       });
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`${base}/mcp`),
+        {
+          requestInit: { headers: { authorization: `Bearer ${token}` } },
+        },
+      );
       await client.connect(transport);
       try {
         const listed = await client.listTools();
@@ -75,6 +97,7 @@ describe("session recall MCP HTTP transport", () => {
           listed.tools.map((tool) => tool.name),
           [
             "recall",
+            "discover_scopes",
             "drill_down_session_evidence",
             "inspect_session",
             "expand_session",
@@ -83,7 +106,9 @@ describe("session recall MCP HTTP transport", () => {
             "capture_status",
           ],
         );
-        assert.ok(listed.tools.every((tool) => tool.annotations?.readOnlyHint === true));
+        assert.ok(
+          listed.tools.every((tool) => tool.annotations?.readOnlyHint === true),
+        );
       } finally {
         await client.close();
       }

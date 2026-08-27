@@ -6,9 +6,19 @@ import { resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
-import { SessionOperation, type SessionOperation as Operation } from "./engine.ts";
+import {
+  SessionOperation,
+  type SessionOperation as Operation,
+} from "./engine.ts";
 import { runSessionActor, type MachineOutcome } from "./machine.ts";
 import type { ToolPayload } from "./presenter.ts";
+import {
+  createScopeDiscoveryRunner,
+  SCOPE_DISCOVERY_DEFAULT_LIMIT,
+  SCOPE_DISCOVERY_MAX_LIMIT,
+  scopeDiscoveryPayload,
+  type ScopeDiscoveryRunner,
+} from "./scope-discovery.ts";
 
 const MAX_EVIDENCE_FILES = 200;
 const MAX_HITS = 50;
@@ -17,7 +27,15 @@ const MAX_INSPECT_AFTER = 200;
 const MAX_EXPAND = 40;
 const MAX_CHUNK_CONTEXT = 10;
 
-const RuntimeSchema = z.enum(["all", "pi", "claude", "codex", "cursor", "grok", "opencode"]);
+const RuntimeSchema = z.enum([
+  "all",
+  "pi",
+  "claude",
+  "codex",
+  "cursor",
+  "grok",
+  "opencode",
+]);
 const PrivacySchema = z.enum(["public", "private", "sensitive"]);
 const EvidenceReceiptPayloadSchema = z.object({
   version: z.literal(1),
@@ -39,10 +57,19 @@ export interface SessionRecallMcpOptions {
   readonly cwd?: string;
   readonly machine?: string;
   readonly runner?: SessionRecallOperationRunner;
+  readonly scopeDiscoveryRunner?: ScopeDiscoveryRunner;
 }
 
-function bounded(value: number | undefined, fallback: number, min: number, max: number): number {
-  const candidate = value === undefined || !Number.isFinite(value) ? fallback : Math.floor(value);
+function bounded(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const candidate =
+    value === undefined || !Number.isFinite(value)
+      ? fallback
+      : Math.floor(value);
   return Math.min(max, Math.max(min, candidate));
 }
 
@@ -59,7 +86,9 @@ function issueEvidenceReceipt(project: string, workstream: string): string {
     }),
     "utf8",
   ).toString("base64url");
-  const signature = createHmac("sha256", evidenceReceiptKey).update(payload).digest("base64url");
+  const signature = createHmac("sha256", evidenceReceiptKey)
+    .update(payload)
+    .digest("base64url");
   return `${payload}.${signature}`;
 }
 
@@ -68,8 +97,14 @@ function validEvidenceReceipt(receipt: string): boolean {
     const [payload, signature, extra] = receipt.split(".");
     if (!payload || !signature || extra !== undefined) return false;
     const supplied = Buffer.from(signature, "base64url");
-    const expected = createHmac("sha256", evidenceReceiptKey).update(payload).digest();
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return false;
+    const expected = createHmac("sha256", evidenceReceiptKey)
+      .update(payload)
+      .digest();
+    if (
+      supplied.length !== expected.length ||
+      !timingSafeEqual(supplied, expected)
+    )
+      return false;
     const decoded = EvidenceReceiptPayloadSchema.parse(
       JSON.parse(Buffer.from(payload, "base64url").toString("utf8")),
     );
@@ -92,9 +127,13 @@ function payloadResult(payload: ToolPayload) {
   };
 }
 
-function failureResult(outcome: Exclude<MachineOutcome, { readonly status: "succeeded" }>) {
+function failureResult(
+  outcome: Exclude<MachineOutcome, { readonly status: "succeeded" }>,
+) {
   const cancelled = outcome.status === "cancelled";
-  const text = cancelled ? "Memory operation cancelled." : "Memory operation failed.";
+  const text = cancelled
+    ? "Memory operation cancelled."
+    : "Memory operation failed.";
   return {
     content: [{ type: "text" as const, text }],
     structuredContent: {
@@ -115,7 +154,9 @@ async function execute(
   signal: AbortSignal,
 ) {
   const outcome = await runner(operation, signal);
-  return outcome.status === "succeeded" ? payloadResult(outcome.result) : failureResult(outcome);
+  return outcome.status === "succeeded"
+    ? payloadResult(outcome.result)
+    : failureResult(outcome);
 }
 
 async function executeRecall(
@@ -135,6 +176,20 @@ async function executeRecall(
       evidenceDrilldownReceiptTtlSeconds: EVIDENCE_RECEIPT_TTL_MS / 1_000,
     },
   });
+}
+
+async function executeScopeDiscovery(
+  runner: ScopeDiscoveryRunner,
+  input: Parameters<ScopeDiscoveryRunner>[0],
+  signal: AbortSignal,
+) {
+  try {
+    return payloadResult(scopeDiscoveryPayload(await runner(input, signal)));
+  } catch {
+    return payloadResult(
+      scopeDiscoveryPayload({ status: "unavailable", kind: "process-failed" }),
+    );
+  }
 }
 
 function evidenceGateFailureResult() {
@@ -160,10 +215,15 @@ const OutputSchema = {
   isError: z.boolean().optional(),
 };
 
-export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = {}): McpServer {
+export function createSessionRecallMcpServer(
+  options: SessionRecallMcpOptions = {},
+): McpServer {
   const cwd = options.cwd ?? process.cwd();
   const machine = options.machine ?? hostname().replace(/\..*$/u, "");
   const runner = options.runner ?? runSessionActor;
+  let scopeDiscoveryRunner = options.scopeDiscoveryRunner;
+  const getScopeDiscoveryRunner = () =>
+    (scopeDiscoveryRunner ??= createScopeDiscoveryRunner());
   const server = new McpServer(
     { name: "session-recall-memory", version: "1.0.0" },
     {
@@ -171,7 +231,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
         "Use recall for every memory request. It searches distilled reflections, observations, and curated pages.",
         "Recall scope is exact: project is usually owner.repo and workstream is usually main, default, or the current branch.",
         "Prefer one or two concrete query terms. Exact two-term matches rank first; three or more terms require every term.",
-        "If recall reports No projection head, correct the scope instead of searching transcripts.",
+        "If recall reports No projection head, call discover_scopes to find persisted project/workstream candidates instead of guessing or searching transcripts.",
         "Keep the three lanes in canonical order and never compare scores across them.",
         "Raw transcripts are evidence, never a recall lane.",
         "Only drill_down_session_evidence and drill_down_session_chunks scan native transcripts.",
@@ -192,17 +252,23 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
           .string()
           .min(1)
           .max(1_000)
-          .describe("Prefer one or two concrete terms. Exact two-term matches rank first; three or more terms require every term."),
+          .describe(
+            "Prefer one or two concrete terms. Exact two-term matches rank first; three or more terms require every term.",
+          ),
         project: z
           .string()
           .min(1)
           .max(240)
-          .describe("Exact persisted repository identity, commonly owner.repo."),
+          .describe(
+            "Exact persisted repository identity, commonly owner.repo.",
+          ),
         workstream: z
           .string()
           .min(1)
           .max(240)
-          .describe("Exact persisted branch or bookmark, commonly main or default."),
+          .describe(
+            "Exact persisted branch or bookmark, commonly main or default.",
+          ),
         limit: z.number().int().min(1).max(MAX_HITS).optional(),
         includeSuperseded: z.boolean().optional(),
         allowedPrivacy: z.array(PrivacySchema).min(1).optional(),
@@ -228,6 +294,65 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
         input.workstream,
       );
     },
+  );
+
+  server.registerTool(
+    "discover_scopes",
+    {
+      title: "Discover Persisted Recall Scopes",
+      description:
+        "After recall reports No projection head, discover exact persisted project/workstream candidates. This returns semantic metadata, not raw evidence, and neither requires nor mints an evidence receipt.",
+      inputSchema: {
+        project_hint: z
+          .string()
+          .trim()
+          .min(1)
+          .max(240)
+          .optional()
+          .describe("Optional bounded project substring or prefix hint."),
+        workstream_hint: z
+          .string()
+          .trim()
+          .min(1)
+          .max(240)
+          .optional()
+          .describe("Optional bounded workstream substring or prefix hint."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(SCOPE_DISCOVERY_MAX_LIMIT)
+          .optional()
+          .describe("Candidate limit; defaults to 10 and never exceeds 50."),
+        allowed_privacy: z
+          .array(PrivacySchema)
+          .min(1)
+          .max(3)
+          .refine((tiers) => new Set(tiers).size === tiers.length, {
+            message: "allowed_privacy values must be unique",
+          })
+          .describe(
+            "Required explicit privacy grant using public, private, or sensitive.",
+          ),
+      },
+      outputSchema: OutputSchema,
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
+    (input, extra) =>
+      executeScopeDiscovery(
+        getScopeDiscoveryRunner(),
+        {
+          ...(input.project_hint === undefined
+            ? {}
+            : { projectHint: input.project_hint }),
+          ...(input.workstream_hint === undefined
+            ? {}
+            : { workstreamHint: input.workstream_hint }),
+          limit: input.limit ?? SCOPE_DISCOVERY_DEFAULT_LIMIT,
+          allowedPrivacy: input.allowed_privacy,
+        },
+        extra.signal,
+      ),
   );
 
   server.registerTool(
@@ -299,7 +424,8 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
     "expand_session",
     {
       title: "Expand Session Evidence",
-      description: "Continue one native transcript through a bounded opaque cursor page.",
+      description:
+        "Continue one native transcript through a bounded opaque cursor page.",
       inputSchema: {
         sessionId: z.string().min(1),
         cursor: z.string().optional(),
@@ -358,7 +484,12 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
         query: z.string().min(1).max(1_000),
         evidenceDrilldownReceipt: z.string().min(1),
         limit: z.number().int().min(1).max(20).optional(),
-        contextBefore: z.number().int().min(0).max(MAX_CHUNK_CONTEXT).optional(),
+        contextBefore: z
+          .number()
+          .int()
+          .min(0)
+          .max(MAX_CHUNK_CONTEXT)
+          .optional(),
         contextAfter: z.number().int().min(0).max(MAX_CHUNK_CONTEXT).optional(),
         excludeCurrent: z.boolean().optional(),
         currentSessionId: z.string().min(1).optional(),
@@ -384,7 +515,8 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
           cwd,
           excludeCurrent:
             input.excludeCurrent === true &&
-            (input.currentSessionId !== undefined || input.currentSessionFile !== undefined),
+            (input.currentSessionId !== undefined ||
+              input.currentSessionFile !== undefined),
           currentSessionId: input.currentSessionId,
           currentSessionFile: input.currentSessionFile,
           warnings: [],
