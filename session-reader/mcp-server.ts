@@ -186,7 +186,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
     {
       title: "Flowing Recall",
       description:
-        "Recall one exact project/workstream through the canonical reflection, observation, and curated-page lanes.",
+        "Start every memory request here. Search distilled reflections, observations, and curated pages in one exact scope. Project is commonly owner.repo; workstream is commonly main or default. Prefer one or two concrete query terms. Returns the signed receipt required for raw evidence drill-down.",
       inputSchema: {
         query: z
           .string()
