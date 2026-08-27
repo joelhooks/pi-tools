@@ -51,7 +51,7 @@ case "${1:-}" in
     fi
 
     "$node_bin" --input-type=module -e \
-      'import { pathToFileURL } from "node:url"; await import(pathToFileURL(process.argv[1]).href)' \
+      'import { pathToFileURL } from "node:url"; const source = process.argv[1]; process.argv[1] = "installer-validation"; await import(pathToFileURL(source).href)' \
       "$server_source"
 
     mkdir -p "$(dirname "$wrapper")" "$HOME/Library/LaunchAgents" "$logs"
