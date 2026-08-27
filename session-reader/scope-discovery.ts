@@ -128,6 +128,10 @@ export interface BoundedProcessResult {
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  /** Raw bytes observed before UTF-8 decoding or trimming. */
+  readonly stdoutBytes: number;
+  /** Raw bytes observed before UTF-8 decoding or trimming. */
+  readonly stderrBytes: number;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
   readonly outputLimited: boolean;
@@ -140,10 +144,11 @@ export type BoundedProcessRunner = (
 
 const KILL_GRACE_MS = 250;
 const REAP_BACKSTOP_MS = 2_000;
+const PROCESS_GROUP_POLL_MS = 25;
 
 type TerminationReason = "cancelled" | "output-limit" | "timeout";
 
-function killProcessGroup(
+function signalProcessGroup(
   pid: number | undefined,
   signal: NodeJS.Signals,
 ): void {
@@ -151,27 +156,41 @@ function killProcessGroup(
   try {
     process.kill(-pid, signal);
   } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // The process already exited.
-    }
+    // The exact detached process group already exited.
+  }
+}
+
+function processGroupIsAlive(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    return true;
   }
 }
 
 /** Spawn with a hard deadline, cancellation, process-group cleanup, and byte caps. */
 export const runBoundedProcess: BoundedProcessRunner = (request) =>
   new Promise((resolveRun) => {
+    const emptyResult = (
+      overrides: Partial<BoundedProcessResult>,
+    ): BoundedProcessResult => ({
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      timedOut: false,
+      cancelled: false,
+      outputLimited: false,
+      missingExecutable: false,
+      ...overrides,
+    });
+
     if (request.signal.aborted) {
-      resolveRun({
-        exitCode: null,
-        stdout: "",
-        stderr: "",
-        timedOut: false,
-        cancelled: true,
-        outputLimited: false,
-        missingExecutable: false,
-      });
+      resolveRun(emptyResult({ cancelled: true }));
       return;
     }
 
@@ -183,41 +202,42 @@ export const runBoundedProcess: BoundedProcessRunner = (request) =>
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch {
-      resolveRun({
-        exitCode: null,
-        stdout: "",
-        stderr: "",
-        timedOut: false,
-        cancelled: false,
-        outputLimited: false,
-        missingExecutable: true,
-      });
+      resolveRun(emptyResult({ missingExecutable: true }));
       return;
     }
 
+    const processGroupId = child.pid;
     let settled = false;
     let terminationReason: TerminationReason | undefined;
+    let leaderExitCode: number | null = null;
     let stdoutBytes = 0;
     let stderrBytes = 0;
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let escalationTimer: ReturnType<typeof setTimeout> | undefined;
     let reapTimer: ReturnType<typeof setTimeout> | undefined;
+    let groupPollTimer: ReturnType<typeof setTimeout> | undefined;
 
     const result = (exitCode: number | null): BoundedProcessResult => ({
       exitCode,
       stdout: Buffer.concat(stdoutChunks).toString("utf8").trim(),
       stderr: Buffer.concat(stderrChunks).toString("utf8").trim(),
+      stdoutBytes,
+      stderrBytes,
       timedOut: terminationReason === "timeout",
       cancelled: terminationReason === "cancelled",
       outputLimited: terminationReason === "output-limit",
       missingExecutable: false,
     });
 
+    const cancel = () => terminate("cancelled");
+
     const cleanup = () => {
-      clearTimeout(deadlineTimer);
-      if (killTimer) clearTimeout(killTimer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (escalationTimer) clearTimeout(escalationTimer);
       if (reapTimer) clearTimeout(reapTimer);
+      if (groupPollTimer) clearTimeout(groupPollTimer);
       request.signal.removeEventListener("abort", cancel);
     };
 
@@ -228,41 +248,42 @@ export const runBoundedProcess: BoundedProcessRunner = (request) =>
       resolveRun(value);
     };
 
-    const terminate = (reason: TerminationReason) => {
-      if (terminationReason !== undefined) return;
-      terminationReason = reason;
-      killProcessGroup(child.pid, "SIGTERM");
-      killTimer = setTimeout(
-        () => killProcessGroup(child.pid, "SIGKILL"),
-        KILL_GRACE_MS,
-      );
-      reapTimer = setTimeout(
-        () => finish(result(null)),
-        KILL_GRACE_MS + REAP_BACKSTOP_MS,
-      );
+    const waitForKilledGroup = () => {
+      if (!processGroupIsAlive(processGroupId)) {
+        finish(result(leaderExitCode));
+        return;
+      }
+      groupPollTimer = setTimeout(waitForKilledGroup, PROCESS_GROUP_POLL_MS);
     };
 
-    const cancel = () => terminate("cancelled");
-    const deadlineTimer = setTimeout(
-      () => terminate("timeout"),
-      request.timeoutMs,
-    );
+    function terminate(reason: TerminationReason): void {
+      if (terminationReason !== undefined) return;
+      terminationReason = reason;
+      signalProcessGroup(processGroupId, "SIGTERM");
+
+      // Leader close must not cancel escalation: descendants may ignore TERM
+      // and close inherited stdio before the leader exits.
+      escalationTimer = setTimeout(() => {
+        signalProcessGroup(processGroupId, "SIGKILL");
+        waitForKilledGroup();
+      }, KILL_GRACE_MS);
+      reapTimer = setTimeout(
+        () => finish(result(leaderExitCode)),
+        KILL_GRACE_MS + REAP_BACKSTOP_MS,
+      );
+    }
+
+    deadlineTimer = setTimeout(() => terminate("timeout"), request.timeoutMs);
     request.signal.addEventListener("abort", cancel, { once: true });
+    if (request.signal.aborted) cancel();
 
     child.once("error", (error: NodeJS.ErrnoException) => {
-      finish({
-        exitCode: null,
-        stdout: "",
-        stderr: "",
-        timedOut: false,
-        cancelled: false,
-        outputLimited: false,
-        missingExecutable: error.code === "ENOENT",
-      });
+      if (terminationReason !== undefined) return;
+      finish(emptyResult({ missingExecutable: error.code === "ENOENT" }));
     });
     child.stdout?.on("data", (chunk: Buffer) => {
-      if (settled || terminationReason !== undefined) return;
       stdoutBytes += chunk.byteLength;
+      if (settled || terminationReason !== undefined) return;
       if (stdoutBytes > request.maxStdoutBytes) {
         terminate("output-limit");
         return;
@@ -270,15 +291,18 @@ export const runBoundedProcess: BoundedProcessRunner = (request) =>
       stdoutChunks.push(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      if (settled || terminationReason !== undefined) return;
       stderrBytes += chunk.byteLength;
+      if (settled || terminationReason !== undefined) return;
       if (stderrBytes > request.maxStderrBytes) {
         terminate("output-limit");
         return;
       }
       stderrChunks.push(chunk);
     });
-    child.once("close", (code) => finish(result(code)));
+    child.once("close", (code) => {
+      leaderExitCode = code;
+      if (terminationReason === undefined) finish(result(code));
+    });
     child.stdin?.on("error", () => {
       // EPIPE is represented by the child's exit and never surfaced verbatim.
     });
@@ -342,6 +366,7 @@ export async function leaseScopeDiscoveryCredential(
     processResult.timedOut ||
     processResult.outputLimited ||
     processResult.missingExecutable ||
+    processResult.stderrBytes !== 0 ||
     processResult.exitCode !== 0
   ) {
     return { ok: false, kind: "unavailable" };
@@ -353,8 +378,8 @@ export async function leaseScopeDiscoveryCredential(
 }
 
 export interface ScopeDiscoveryRunnerOptions {
-  /** Test seam. Production always uses the pinned sealed release. */
-  readonly releaseTarget?: ScopeDiscoveryReleaseTarget;
+  /** Test-only owner/anchor seam. Production always uses the root-owned target. */
+  readonly testOnlyReleaseTarget?: ScopeDiscoveryReleaseTarget;
   readonly runProcess?: BoundedProcessRunner;
   readonly leaseCredential?: ScopeDiscoveryCredentialLeaser;
   readonly parentEnv?: Readonly<Record<string, string | undefined>>;
@@ -486,6 +511,7 @@ async function runWithRelease(
   if (processResult.outputLimited) return unavailable("output-limit");
   if (processResult.missingExecutable)
     return unavailable("release-unavailable");
+  if (processResult.stderrBytes !== 0) return unavailable("malformed-response");
   if (processResult.exitCode !== 0 && processResult.exitCode !== 3) {
     return unavailable("process-failed");
   }
@@ -523,7 +549,7 @@ export function createScopeDiscoveryRunner(
   options: ScopeDiscoveryRunnerOptions = {},
 ): ScopeDiscoveryRunner {
   const release = verifyScopeDiscoveryRelease(
-    options.releaseTarget ?? PRODUCTION_SCOPE_DISCOVERY_RELEASE,
+    options.testOnlyReleaseTarget ?? PRODUCTION_SCOPE_DISCOVERY_RELEASE,
   );
   if (!release.ok) {
     return async () => unavailable("release-unavailable");

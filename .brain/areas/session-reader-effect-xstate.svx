@@ -78,6 +78,18 @@ The local actor smoke test on the same transcript produced:
 - 64–85 ms across repeated smoke runs
 - lifecycle snapshots `inspecting → succeeded`
 
+## Scope discovery executable trust boundary
+
+`discover_scopes` may lease a database credential only after proving the pinned standalone under `/Library/Application Support/JoelClaw/flowing-memory/releases/20260827-05d92ead-scope-v1`.
+
+- Production never trusts the user-owned `~/.joelclaw` release. Missing root installation fails closed before lease.
+- Every managed directory from `JoelClaw` through the release is `lstat`-verified as a non-symlink, uid `0`, mode `0555` identity.
+- Manifest and artifact have exact uid, regular-file type, modes, sizes, identities, and consumer-pinned digests. The manifest's pinned source commit is decoded again on each proof.
+- The proof runs before lease and immediately before spawn. A test-only target supplies an isolated anchor and owner uid without changing the production target.
+- Bounded child termination owns the whole detached process group: leader close cannot cancel the grace-period `SIGKILL` escalation. Raw stdout/stderr byte counts preserve whitespace-only contract violations.
+
+The reviewed user release is only an installation source. `session-reader/install-scope-discovery-release.sh` performs the separately approved root copy; it is not a build or deploy step.
+
 ## Verification
 
 ```sh

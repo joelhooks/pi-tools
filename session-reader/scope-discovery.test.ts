@@ -4,8 +4,9 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
-  realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,19 +30,31 @@ import {
 } from "./scope-discovery.ts";
 import {
   PINNED_SCOPE_DISCOVERY_ARTIFACT_SHA256,
+  PINNED_SCOPE_DISCOVERY_ARTIFACT_SIZE,
+  PINNED_SCOPE_DISCOVERY_MANIFEST_SHA256,
+  PINNED_SCOPE_DISCOVERY_MANIFEST_SIZE,
   PINNED_SCOPE_DISCOVERY_MEMORY_COMMIT,
   PINNED_SCOPE_DISCOVERY_RELEASE_NAME,
+  PRODUCTION_SCOPE_DISCOVERY_RELEASE,
+  SCOPE_DISCOVERY_MAX_MANIFEST_BYTES,
   SCOPE_DISCOVERY_RELEASE_MANIFEST_FILENAME,
+  SCOPE_DISCOVERY_TRUSTED_HIERARCHY_ANCHOR,
+  SCOPE_DISCOVERY_TRUSTED_RELEASE_ROOT,
   type ScopeDiscoveryReleaseTarget,
 } from "./scope-discovery-release.ts";
 
 interface TestRelease {
   readonly root: string;
+  readonly hierarchyAnchor: string;
+  readonly flowingMemoryDir: string;
+  readonly releasesRoot: string;
   readonly releaseDir: string;
   readonly artifactPath: string;
   readonly manifestPath: string;
+  readonly manifestBody: string;
   readonly body: string;
   readonly digest: string;
+  readonly cleanupPaths: string[];
   readonly target: ScopeDiscoveryReleaseTarget;
 }
 
@@ -49,14 +62,24 @@ interface TestReleaseOptions {
   readonly artifactMode?: number;
   readonly manifestMode?: number;
   readonly releaseDirMode?: number;
+  readonly releaseRootMode?: number;
+  readonly flowingMemoryMode?: number;
+  readonly hierarchyAnchorMode?: number;
   readonly memoryCommit?: string;
-  readonly manifestDigest?: string;
+  readonly manifestArtifactDigest?: string;
+  readonly expectedManifestDigest?: string;
+  readonly expectedManifestSizeDelta?: number;
+  readonly expectedArtifactSizeDelta?: number;
+  readonly expectedOwnerUid?: number;
 }
 
 function makeRelease(options: TestReleaseOptions = {}): TestRelease {
   const root = mkdtempSync(join(tmpdir(), "scope-discovery-release-"));
-  const releaseDir = join(root, "20260827-test-scope-v1");
-  mkdirSync(releaseDir);
+  const hierarchyAnchor = join(root, "JoelClaw");
+  const flowingMemoryDir = join(hierarchyAnchor, "flowing-memory");
+  const releasesRoot = join(flowingMemoryDir, "releases");
+  const releaseDir = join(releasesRoot, "20260827-test-scope-v1");
+  mkdirSync(releaseDir, { recursive: true });
   const artifactPath = join(releaseDir, "joelclaw-memory");
   const body = "#!/bin/sh\nexit 0\n";
   const digest = createHash("sha256").update(body).digest("hex");
@@ -66,37 +89,52 @@ function makeRelease(options: TestReleaseOptions = {}): TestRelease {
     releaseDir,
     SCOPE_DISCOVERY_RELEASE_MANIFEST_FILENAME,
   );
-  writeFileSync(
-    manifestPath,
-    JSON.stringify({
-      _tag: "FlowingMemoryReleaseManifestV2",
-      schemaVersion: 2,
-      memoryCommit:
-        options.memoryCommit ?? PINNED_SCOPE_DISCOVERY_MEMORY_COMMIT,
-      releasedAt: "2026-08-27T00:00:00.000Z",
-      artifacts: [
-        {
-          kind: "standalone",
-          path: "joelclaw-memory",
-          sha256: options.manifestDigest ?? digest,
-        },
-      ],
-    }),
-  );
+  const manifestBody = JSON.stringify({
+    _tag: "FlowingMemoryReleaseManifestV2",
+    schemaVersion: 2,
+    memoryCommit: options.memoryCommit ?? PINNED_SCOPE_DISCOVERY_MEMORY_COMMIT,
+    releasedAt: "2026-08-27T00:00:00.000Z",
+    artifacts: [
+      {
+        kind: "standalone",
+        path: "joelclaw-memory",
+        sha256: options.manifestArtifactDigest ?? digest,
+      },
+    ],
+  });
+  writeFileSync(manifestPath, manifestBody);
   chmodSync(manifestPath, options.manifestMode ?? 0o444);
   chmodSync(releaseDir, options.releaseDirMode ?? 0o555);
+  chmodSync(releasesRoot, options.releaseRootMode ?? 0o555);
+  chmodSync(flowingMemoryDir, options.flowingMemoryMode ?? 0o555);
+  chmodSync(hierarchyAnchor, options.hierarchyAnchorMode ?? 0o555);
   return {
     root,
+    hierarchyAnchor,
+    flowingMemoryDir,
+    releasesRoot,
     releaseDir,
     artifactPath,
     manifestPath,
+    manifestBody,
     body,
     digest,
+    cleanupPaths: [releaseDir, releasesRoot, flowingMemoryDir, hierarchyAnchor],
     target: {
-      trustedRoot: root,
+      hierarchyAnchor,
+      trustedRoot: releasesRoot,
       artifactPath,
+      expectedOwnerUid: options.expectedOwnerUid ?? process.getuid?.() ?? 0,
       expectedMemoryCommit: PINNED_SCOPE_DISCOVERY_MEMORY_COMMIT,
+      expectedManifestSha256:
+        options.expectedManifestDigest ??
+        createHash("sha256").update(manifestBody).digest("hex"),
+      expectedManifestSize:
+        Buffer.byteLength(manifestBody) +
+        (options.expectedManifestSizeDelta ?? 0),
       expectedArtifactSha256: digest,
+      expectedArtifactSize:
+        Buffer.byteLength(body) + (options.expectedArtifactSizeDelta ?? 0),
     },
   };
 }
@@ -104,10 +142,14 @@ function makeRelease(options: TestReleaseOptions = {}): TestRelease {
 function processResult(
   overrides: Partial<BoundedProcessResult> = {},
 ): BoundedProcessResult {
+  const stdout = overrides.stdout ?? "";
+  const stderr = overrides.stderr ?? "";
   return {
     exitCode: 0,
-    stdout: "",
-    stderr: "",
+    stdout,
+    stderr,
+    stdoutBytes: overrides.stdoutBytes ?? Buffer.byteLength(stdout),
+    stderrBytes: overrides.stderrBytes ?? Buffer.byteLength(stderr),
     timedOut: false,
     cancelled: false,
     outputLimited: false,
@@ -165,10 +207,12 @@ const input = {
 };
 
 function cleanup(release: TestRelease): void {
-  try {
-    chmodSync(release.releaseDir, 0o755);
-  } catch {
-    // A replacement test may already have removed the directory.
+  for (const path of release.cleanupPaths) {
+    try {
+      chmodSync(path, 0o755);
+    } catch {
+      // An ancestry replacement test may already have moved this path.
+    }
   }
   rmSync(release.root, { force: true, recursive: true });
 }
@@ -210,7 +254,7 @@ describe("scope discovery typed boundary", () => {
     let leaseCount = 0;
     try {
       const runner = createScopeDiscoveryRunner({
-        releaseTarget: release.target,
+        testOnlyReleaseTarget: release.target,
         now: () => new Date("2026-08-27T06:00:00.000Z"),
         parentEnv: {
           PATH: "/usr/bin",
@@ -244,7 +288,7 @@ describe("scope discovery typed boundary", () => {
       assert.equal(leaseCount, 1);
       assert.equal(seen.length, 1);
       assert.deepEqual(seen[0]?.command, [
-        realpathSync(release.artifactPath),
+        release.artifactPath,
         ...SCOPE_DISCOVERY_ARGS,
       ]);
       const argv = JSON.stringify(seen[0]?.command);
@@ -278,15 +322,30 @@ describe("scope discovery typed boundary", () => {
 });
 
 describe("sealed release binding", () => {
-  test("pins the reviewed semantic source and standalone artifact", () => {
+  test("pins the root-owned release, reviewed source, manifest, and artifact", () => {
+    assert.equal(
+      SCOPE_DISCOVERY_TRUSTED_HIERARCHY_ANCHOR,
+      "/Library/Application Support/JoelClaw",
+    );
+    assert.equal(
+      SCOPE_DISCOVERY_TRUSTED_RELEASE_ROOT,
+      "/Library/Application Support/JoelClaw/flowing-memory/releases",
+    );
+    assert.equal(PRODUCTION_SCOPE_DISCOVERY_RELEASE.expectedOwnerUid, 0);
     assert.equal(
       PINNED_SCOPE_DISCOVERY_MEMORY_COMMIT,
       "05d92eadb5091113c5fc648e95ced36eb5fb8f39",
     );
     assert.equal(
+      PINNED_SCOPE_DISCOVERY_MANIFEST_SHA256,
+      "a5d2a737c7dd558ff3e3566646b85d43c2ce5514dee17c4bb09405b79ffcb998",
+    );
+    assert.equal(PINNED_SCOPE_DISCOVERY_MANIFEST_SIZE, 349);
+    assert.equal(
       PINNED_SCOPE_DISCOVERY_ARTIFACT_SHA256,
       "62922264b9f27df3ad9c18c095dabf3dd55477859522739ee396b7de78b3b6cf",
     );
+    assert.equal(PINNED_SCOPE_DISCOVERY_ARTIFACT_SIZE, 74_988_002);
     assert.equal(
       PINNED_SCOPE_DISCOVERY_RELEASE_NAME,
       "20260827-05d92ead-scope-v1",
@@ -294,9 +353,14 @@ describe("sealed release binding", () => {
   });
 
   for (const [name, options] of [
-    ["artifact digest mismatch", { manifestDigest: "a".repeat(64) }],
+    ["manifest digest mismatch", { expectedManifestDigest: "a".repeat(64) }],
+    ["manifest exact size mismatch", { expectedManifestSizeDelta: 1 }],
+    ["artifact digest mismatch", { manifestArtifactDigest: "a".repeat(64) }],
+    ["artifact exact size mismatch", { expectedArtifactSizeDelta: 1 }],
     ["artifact writable mode", { artifactMode: 0o755 }],
+    ["artifact noncanonical mode", { artifactMode: 0o500 }],
     ["manifest writable mode", { manifestMode: 0o644 }],
+    ["manifest noncanonical mode", { manifestMode: 0o400 }],
     ["release directory writable mode", { releaseDirMode: 0o755 }],
     ["wrong semantic source commit", { memoryCommit: "0".repeat(40) }],
   ] as const) {
@@ -305,7 +369,7 @@ describe("sealed release binding", () => {
       let leaseCount = 0;
       try {
         const runner = createScopeDiscoveryRunner({
-          releaseTarget: release.target,
+          testOnlyReleaseTarget: release.target,
           leaseCredential: async () => {
             leaseCount += 1;
             return { ok: true, value: "must-not-exist" };
@@ -323,12 +387,171 @@ describe("sealed release binding", () => {
     });
   }
 
+  test("refuses a user-owned hierarchy before leasing a credential", async () => {
+    const currentUid = process.getuid?.() ?? 0;
+    const release = makeRelease({
+      expectedOwnerUid: currentUid === 0 ? 1 : 0,
+    });
+    let leaseCount = 0;
+    try {
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: release.target,
+        leaseCredential: async () => {
+          leaseCount += 1;
+          return { ok: true, value: "must-not-exist" };
+        },
+      });
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "release-unavailable",
+      });
+      assert.equal(leaseCount, 0);
+    } finally {
+      cleanup(release);
+    }
+  });
+
+  test("refuses a writable managed ancestor before leasing a credential", async () => {
+    const release = makeRelease({ hierarchyAnchorMode: 0o755 });
+    let leaseCount = 0;
+    try {
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: release.target,
+        leaseCredential: async () => {
+          leaseCount += 1;
+          return { ok: true, value: "must-not-exist" };
+        },
+      });
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "release-unavailable",
+      });
+      assert.equal(leaseCount, 0);
+    } finally {
+      cleanup(release);
+    }
+  });
+
+  test("refuses a symlinked managed ancestor before leasing a credential", async () => {
+    const release = makeRelease();
+    const realReleasesRoot = `${release.releasesRoot}.real`;
+    let leaseCount = 0;
+    try {
+      chmodSync(release.hierarchyAnchor, 0o755);
+      chmodSync(release.flowingMemoryDir, 0o755);
+      chmodSync(release.releasesRoot, 0o755);
+      renameSync(release.releasesRoot, realReleasesRoot);
+      chmodSync(realReleasesRoot, 0o555);
+      symlinkSync(realReleasesRoot, release.releasesRoot);
+      chmodSync(release.flowingMemoryDir, 0o555);
+      chmodSync(release.hierarchyAnchor, 0o555);
+      release.cleanupPaths.push(realReleasesRoot);
+
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: release.target,
+        leaseCredential: async () => {
+          leaseCount += 1;
+          return { ok: true, value: "must-not-exist" };
+        },
+      });
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "release-unavailable",
+      });
+      assert.equal(leaseCount, 0);
+    } finally {
+      cleanup(release);
+    }
+  });
+
+  test("refuses renamed and byte-identically recreated ancestry before lease", async () => {
+    const release = makeRelease();
+    const renamedRoot = `${release.releasesRoot}.renamed`;
+    let leaseCount = 0;
+    try {
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: release.target,
+        leaseCredential: async () => {
+          leaseCount += 1;
+          return { ok: true, value: "must-not-exist" };
+        },
+      });
+
+      chmodSync(release.hierarchyAnchor, 0o755);
+      chmodSync(release.flowingMemoryDir, 0o755);
+      chmodSync(release.releasesRoot, 0o755);
+      renameSync(release.releasesRoot, renamedRoot);
+      chmodSync(renamedRoot, 0o555);
+      mkdirSync(release.releaseDir, { recursive: true });
+      writeFileSync(release.artifactPath, release.body);
+      chmodSync(release.artifactPath, 0o555);
+      writeFileSync(release.manifestPath, release.manifestBody);
+      chmodSync(release.manifestPath, 0o444);
+      chmodSync(release.releaseDir, 0o555);
+      chmodSync(release.releasesRoot, 0o555);
+      chmodSync(release.flowingMemoryDir, 0o555);
+      chmodSync(release.hierarchyAnchor, 0o555);
+      release.cleanupPaths.push(
+        join(renamedRoot, "20260827-test-scope-v1"),
+        renamedRoot,
+      );
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "release-unavailable",
+      });
+      assert.equal(leaseCount, 0);
+    } finally {
+      cleanup(release);
+    }
+  });
+
+  test("refuses a manifest size above the synchronous read cap before lease", async () => {
+    const release = makeRelease();
+    let leaseCount = 0;
+    try {
+      const oversizedManifest = "x".repeat(
+        SCOPE_DISCOVERY_MAX_MANIFEST_BYTES + 1,
+      );
+      chmodSync(release.releaseDir, 0o755);
+      chmodSync(release.manifestPath, 0o644);
+      writeFileSync(release.manifestPath, oversizedManifest);
+      chmodSync(release.manifestPath, 0o444);
+      chmodSync(release.releaseDir, 0o555);
+      const target = {
+        ...release.target,
+        expectedManifestSha256: createHash("sha256")
+          .update(oversizedManifest)
+          .digest("hex"),
+        expectedManifestSize: Buffer.byteLength(oversizedManifest),
+      };
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: target,
+        leaseCredential: async () => {
+          leaseCount += 1;
+          return { ok: true, value: "must-not-exist" };
+        },
+      });
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "release-unavailable",
+      });
+      assert.equal(leaseCount, 0);
+    } finally {
+      cleanup(release);
+    }
+  });
+
   test("refuses a byte-identical artifact identity replacement before lease", async () => {
     const release = makeRelease();
     let leaseCount = 0;
     try {
       const runner = createScopeDiscoveryRunner({
-        releaseTarget: release.target,
+        testOnlyReleaseTarget: release.target,
         leaseCredential: async () => {
           leaseCount += 1;
           return { ok: true, value: "must-not-exist" };
@@ -356,7 +579,7 @@ describe("sealed release binding", () => {
     let spawned = false;
     try {
       const runner = createScopeDiscoveryRunner({
-        releaseTarget: release.target,
+        testOnlyReleaseTarget: release.target,
         leaseCredential: async () => {
           chmodSync(release.releaseDir, 0o755);
           rmSync(release.artifactPath);
@@ -410,6 +633,39 @@ describe("process and envelope fail-closed behavior", () => {
     assert.deepEqual(seen[0]?.env, { TERM: "dumb", PATH: "/usr/bin" });
   });
 
+  test("refuses a successful credential lease that writes stderr bytes", async () => {
+    const lease = await leaseScopeDiscoveryCredential({
+      signal: new AbortController().signal,
+      timeoutMs: 500,
+      runProcess: async () =>
+        processResult({
+          stdout: "postgres://runtime-secret",
+          stderr: " \n",
+        }),
+    });
+
+    assert.deepEqual(lease, { ok: false, kind: "unavailable" });
+  });
+
+  test("rejects scope producer stderr bytes before decoding a valid envelope", async () => {
+    const release = makeRelease();
+    try {
+      const runner = createScopeDiscoveryRunner({
+        testOnlyReleaseTarget: release.target,
+        leaseCredential: async () => ({ ok: true, value: "runtime-secret" }),
+        runProcess: async () =>
+          processResult({ stdout: successEnvelope(), stderr: "\t" }),
+      });
+
+      assert.deepEqual(await runner(input, new AbortController().signal), {
+        status: "unavailable",
+        kind: "malformed-response",
+      });
+    } finally {
+      cleanup(release);
+    }
+  });
+
   for (const [name, exitCode, stdout] of [
     ["success envelope with unavailable exit", 3, successEnvelope()],
     ["unavailable envelope with success exit", 0, unavailableEnvelope()],
@@ -435,7 +691,7 @@ describe("process and envelope fail-closed behavior", () => {
       const release = makeRelease();
       try {
         const runner = createScopeDiscoveryRunner({
-          releaseTarget: release.target,
+          testOnlyReleaseTarget: release.target,
           leaseCredential: async () => ({ ok: true, value: "runtime-secret" }),
           runProcess: async () => processResult({ exitCode, stdout }),
         });
@@ -455,7 +711,7 @@ describe("process and envelope fail-closed behavior", () => {
     let invocation = 0;
     try {
       const runner = createScopeDiscoveryRunner({
-        releaseTarget: release.target,
+        testOnlyReleaseTarget: release.target,
         leaseCredential: async () => ({ ok: true, value: "runtime-secret" }),
         runProcess: async () => {
           invocation += 1;
@@ -489,7 +745,7 @@ describe("process and envelope fail-closed behavior", () => {
       const release = makeRelease();
       try {
         const runner = createScopeDiscoveryRunner({
-          releaseTarget: release.target,
+          testOnlyReleaseTarget: release.target,
           leaseCredential: async () => ({ ok: true, value: "runtime-secret" }),
           runProcess: async () => processResult(process),
         });
@@ -504,7 +760,38 @@ describe("process and envelope fail-closed behavior", () => {
   }
 });
 
+function exactPidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
 describe("real bounded process runner", () => {
+  test("reports raw stdout and stderr bytes even when text trims to empty", async () => {
+    const result = await runBoundedProcess({
+      command: [
+        process.execPath,
+        "-e",
+        "process.stdout.write(' \\n'); process.stderr.write('\\t')",
+      ],
+      stdin: "",
+      env: minimalScopeDiscoveryEnv(process.env),
+      timeoutMs: 5_000,
+      maxStdoutBytes: SCOPE_DISCOVERY_MAX_STDOUT_BYTES,
+      maxStderrBytes: SCOPE_DISCOVERY_MAX_STDERR_BYTES,
+      signal: new AbortController().signal,
+    });
+
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdoutBytes, 2);
+    assert.equal(result.stderrBytes, 1);
+  });
+
   test("enforces stdout bytes without retaining unbounded output", async () => {
     const result = await runBoundedProcess({
       command: [
@@ -551,5 +838,40 @@ describe("real bounded process runner", () => {
       signal: controller.signal,
     });
     assert.equal(result.cancelled, true);
+  });
+
+  test("kills the process group when the leader exits on SIGTERM", async () => {
+    const descendantSource = [
+      "process.on('SIGTERM', () => {});",
+      "process.send?.('ready');",
+      "setInterval(() => {}, 1000);",
+    ].join("");
+    const leaderSource = [
+      "const { spawn } = require('node:child_process');",
+      `const descendant = spawn(${JSON.stringify(process.execPath)}, ['-e', ${JSON.stringify(descendantSource)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+      "descendant.once('message', () => process.stdout.write(String(descendant.pid) + '\\n'));",
+      "setInterval(() => {}, 1000);",
+    ].join("");
+
+    const result = await runBoundedProcess({
+      command: [process.execPath, "-e", leaderSource],
+      stdin: "",
+      env: minimalScopeDiscoveryEnv(process.env),
+      timeoutMs: 500,
+      maxStdoutBytes: SCOPE_DISCOVERY_MAX_STDOUT_BYTES,
+      maxStderrBytes: SCOPE_DISCOVERY_MAX_STDERR_BYTES,
+      signal: new AbortController().signal,
+    });
+    const descendantPid = Number.parseInt(result.stdout, 10);
+    assert.equal(result.timedOut, true);
+    assert.equal(Number.isInteger(descendantPid), true);
+
+    try {
+      assert.equal(exactPidIsAlive(descendantPid), false);
+    } finally {
+      if (Number.isInteger(descendantPid) && exactPidIsAlive(descendantPid)) {
+        process.kill(descendantPid, "SIGKILL");
+      }
+    }
   });
 });
