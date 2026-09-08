@@ -91,7 +91,7 @@ export function createSessionRecallMcpHttpApp(options: SessionRecallHttpOptions)
   );
 
   app.post("/mcp", async (request: Request, response: Response) => {
-    const server = createSessionRecallMcpServer(options);
+    const server = createSessionRecallMcpServer({ ...options, profile: "cloud" });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     response.on("close", () => {
       void transport.close();

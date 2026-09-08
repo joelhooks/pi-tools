@@ -6,6 +6,7 @@ import { createSessionRecallMcpServer } from "./mcp-server.ts";
 import type { SessionOperation } from "./engine.ts";
 
 const expectedTools = [
+  "browse_memory",
   "recall",
   "discover_scopes",
   "drill_down_session_evidence",
@@ -14,15 +15,18 @@ const expectedTools = [
   "session_context",
   "drill_down_session_chunks",
   "capture_status",
+  "memory_skill",
 ];
 
 async function withClient(
   run: (client: Client, operations: SessionOperation[]) => Promise<void>,
+  profile: "local" | "cloud" = "local",
 ): Promise<void> {
   const operations: SessionOperation[] = [];
   const server = createSessionRecallMcpServer({
     cwd: "/tmp/session-recall-mcp",
     machine: "test-machine",
+    profile,
     runner: async (operation) => {
       operations.push(operation);
       return {
@@ -230,6 +234,7 @@ describe("session recall MCP", () => {
         name: "inspect_session",
         arguments: {
           sessionId: "session-1",
+          evidenceDrilldownReceipt,
           around: "receipt",
           before: 2,
           after: 3,
@@ -251,6 +256,55 @@ describe("session recall MCP", () => {
       assert.equal(operations[3].excludeCurrent, true);
       assert.equal(operations[3].currentSessionId, "caller-session");
     });
+  });
+
+  test("serves a bounded cloud-safe memory skill", async () => {
+    await withClient(async (client, operations) => {
+      const result = await client.callTool({
+        name: "memory_skill",
+        arguments: {},
+      });
+      const instructions = (
+        result.structuredContent as { readonly instructions?: unknown }
+      )?.instructions;
+      assert.equal(typeof instructions, "string");
+      if (typeof instructions !== "string") return;
+      assert.match(instructions, /recall first/u);
+      assert.doesNotMatch(
+        instructions,
+        /\/Users\/|SESSION_RECALL_MCP_TOKEN|tail7af24/u,
+      );
+      assert.equal(operations.length, 0);
+    });
+  });
+
+  test("cloud profile rejects sensitive recall and explicit file paths", async () => {
+    await withClient(async (client, operations) => {
+      const listed = await client.listTools();
+      assert.equal(listed.tools.some((tool) => tool.name === "capture_status"), false);
+
+      const sensitive = await client.callTool({
+        name: "recall",
+        arguments: {
+          query: "private decision",
+          project: "owner.repo",
+          workstream: "main",
+          allowedPrivacy: ["sensitive"],
+        },
+      });
+      assert.equal(sensitive.isError, true);
+
+      const pathRead = await client.callTool({
+        name: "inspect_session",
+        arguments: {
+          sessionId: "/etc/hosts",
+          evidenceDrilldownReceipt: "not-a-valid-receipt",
+          around: "localhost",
+        },
+      });
+      assert.equal(pathRead.isError, true);
+      assert.equal(operations.length, 0);
+    }, "cloud");
   });
 
   test("rejects broad native search without a fresh recall receipt", async () => {

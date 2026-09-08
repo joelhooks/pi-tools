@@ -96,6 +96,7 @@ describe("session recall MCP HTTP transport", () => {
         assert.deepEqual(
           listed.tools.map((tool) => tool.name),
           [
+            "browse_memory",
             "recall",
             "discover_scopes",
             "drill_down_session_evidence",
@@ -103,12 +104,11 @@ describe("session recall MCP HTTP transport", () => {
             "expand_session",
             "session_context",
             "drill_down_session_chunks",
-            "capture_status",
+            "memory_skill",
           ],
         );
-        assert.ok(
-          listed.tools.every((tool) => tool.annotations?.readOnlyHint === true),
-        );
+        assert.ok(listed.tools.every((tool) => tool.annotations?.readOnlyHint === true));
+        assert.ok(listed.tools.every((tool) => tool.annotations?.destructiveHint === false));
       } finally {
         await client.close();
       }
