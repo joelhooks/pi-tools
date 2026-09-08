@@ -73,7 +73,7 @@ Primary Pi tools:
 - `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
-The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. If recall reports `No projection head`, it calls `discover_scopes` and retries recall with one returned exact pair instead of guessing or searching transcripts. Native evidence search requires the signed receipt from a successful recall.
+The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Use `browse_memory` for open-ended exploration and `recall` for a specific question. If recall reports `No projection head`, call `discover_scopes` and retry recall with one returned exact pair instead of guessing or searching transcripts. Native evidence search requires the signed receipt from a successful recall.
 
 `pi-session-recall-mcp-http` serves Streamable HTTP for Executor. It:
 
@@ -124,7 +124,19 @@ After installation, restart the user LaunchAgent and run the read-only scope-dis
 
 `pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
-MCP tools: `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+MCP tools: `browse_memory`, `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `memory_skill`. `capture_status` is available in the local profile only. HTTP uses the cloud profile, which excludes sensitive recall and requires opaque session IDs rather than paths.
+
+`browse_memory` samples the existing curated projection without search terms. It returns up to 20 excerpts from Brain pages, knowledge notes, and Vault notes, with dates, source references, snapshot freshness, and project/type diversity. It neither reads flowing records or raw transcripts nor creates an evidence receipt.
+
+```js
+browse_memory({ mode: "mixed", limit: 8 })
+browse_memory({ mode: "older", olderThanDays: 60 })
+browse_memory({ mode: "recent", since: "7d" })
+```
+
+For another crate, reuse `seed` and pass `nextExcludeIds` as `excludeIds`. Exclusions retain the last 200 selections. `since` accepts rolling hours/days/weeks or an ISO date/time; `until` accepts an ISO date/time. Date-only bounds mean midnight UTC. These filters apply to each result's declared document-date basis, not verified project activity. A creation date or old file timestamp does not prove a project is neglected. Check the source page and exact-scope recall before asserting its current status.
+
+The crate adapter opens the curated SQLite projection read-only, requires schema version 2, and filters collections and public/private grants before returning content. It caps its candidate scan at 20,000 rows and reports truncation. An optional `topic` matches titles and the first 6,000 content characters. It reports missing/stale projections without a remote or raw-data fallback.
 
 `discover_scopes` accepts optional bounded `project_hint` and `workstream_hint`, a limit from 1 through 50 (default 10), and a required non-empty unique `allowed_privacy` grant. It returns semantic scope metadata, not raw evidence, so it neither requires nor mints an evidence receipt. Hints and the typed query travel only over child stdin. The adapter executes only the consumer-pinned standalone under the root-owned immutable hierarchy, re-proves every managed directory plus exact manifest and artifact owner, type, mode, size, identity, source, and digest before credential lease and immediately before spawn, leases only `flowing_memory_runtime_database_url` through the canonical secrets CLI, rejects any producer stderr byte, and gives the child a minimal environment.
 
