@@ -27,6 +27,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Type } from "@sinclair/typebox";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
@@ -832,7 +833,7 @@ export default function (pi: ExtensionAPI) {
     name: "mcp_status",
     label: "MCP: Status",
     description: "List configured MCP servers, their connection status, and registered tools.",
-    parameters: {} as any,
+    parameters: Type.Object({}),
     async execute() {
       const servers = loadServers();
       if (servers.length === 0) {
