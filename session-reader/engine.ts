@@ -93,7 +93,7 @@ export const SessionOperationSchema = Schema.TaggedUnion({
   Recall: {
     query: Schema.String,
     project: Schema.String,
-    workstream: Schema.String,
+    workstream: Schema.optional(Schema.String),
     allowedPrivacy: Schema.Array(
       Schema.Union([
         Schema.Literal("public"),

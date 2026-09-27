@@ -169,7 +169,12 @@ export default function sessionReader(pi: ExtensionAPI): void {
     parameters: Type.Object({
       query: Type.String(),
       project: Type.String(),
-      workstream: Type.String(),
+      workstream: Type.Optional(
+        Type.String({
+          description:
+            "Exact persisted workstream. Omit to search every persisted workstream under this project.",
+        }),
+      ),
       limit: Type.Optional(Type.Number()),
       include_superseded: Type.Optional(Type.Boolean()),
       allowed_privacy: Type.Optional(
@@ -191,7 +196,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
         SessionOperation.Recall({
           query: params.query,
           project: params.project,
-          workstream: params.workstream,
+          ...(params.workstream === undefined ? {} : { workstream: params.workstream }),
           allowedPrivacy: params.allowed_privacy ?? ["public", "private"],
           includeSuperseded: params.include_superseded === true,
           limits: { curated: limit, observations: limit, reflections: limit },
@@ -204,7 +209,7 @@ export default function sessionReader(pi: ExtensionAPI): void {
       return result;
     },
     renderCall(args, theme) {
-      return renderToolCall("flowing_recall", `${args.project}/${args.workstream}`, theme);
+      return renderToolCall("flowing_recall", `${args.project}/${args.workstream ?? "*"}`, theme);
     },
     renderResult,
   });

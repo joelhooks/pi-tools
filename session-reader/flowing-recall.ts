@@ -27,6 +27,7 @@ const LaneAvailableSchema = Schema.Struct({
   lane: LaneNameSchema,
   source: Schema.String,
   scoreScale: Schema.String,
+  diagnostics: Schema.optional(Schema.Unknown),
   health: Schema.Unknown,
   items: Schema.Array(Schema.Unknown),
 });
@@ -42,7 +43,7 @@ const LaneSchema = Schema.Union([LaneAvailableSchema, LaneUnavailableSchema]);
 export const FlowingRecallInputSchema = Schema.Struct({
   query: QuerySchema,
   project: ScopeKeySchema,
-  workstream: ScopeKeySchema,
+  workstream: Schema.optional(ScopeKeySchema),
   allowedPrivacy: Schema.Array(PrivacySchema),
   includeSuperseded: Schema.Boolean,
   limits: Schema.Struct({
@@ -69,7 +70,7 @@ export const ComposedRecallResultBoundarySchema = Schema.Struct({
 export type ComposedRecallResultBoundary = typeof ComposedRecallResultBoundarySchema.Type;
 
 const RecallCliEnvelopeSchema = Schema.Struct({
-  ok: Schema.Literal(true),
+  ok: Schema.Boolean,
   command: Schema.String,
   result: Schema.Struct({
     adapter: Schema.String,
@@ -120,7 +121,7 @@ export function buildComposedRecallRequest(input: FlowingRecallInput): unknown {
     !validated.query.trim() ||
     validated.query.length > MAX_RECALL_QUERY_LENGTH ||
     !SCOPE_KEY_PATTERN.test(validated.project) ||
-    !SCOPE_KEY_PATTERN.test(validated.workstream) ||
+    (validated.workstream !== undefined && !SCOPE_KEY_PATTERN.test(validated.workstream)) ||
     validated.allowedPrivacy.length === 0 ||
     new Set(validated.allowedPrivacy).size !== validated.allowedPrivacy.length ||
     limits.some(
@@ -133,11 +134,14 @@ export function buildComposedRecallRequest(input: FlowingRecallInput): unknown {
     _tag: "ComposedRecallRequestV1",
     schemaVersion: 1,
     text: validated.query,
-    scope: {
-      _tag: "ProjectWorkstream",
-      project: validated.project,
-      workstream: validated.workstream,
-    },
+    scope:
+      validated.workstream === undefined
+        ? { _tag: "Project", project: validated.project }
+        : {
+            _tag: "ProjectWorkstream",
+            project: validated.project,
+            workstream: validated.workstream,
+          },
     access: {
       _tag: "RecallAccessV1",
       allowedPrivacy: validated.allowedPrivacy,
@@ -202,7 +206,7 @@ export async function runFlowingRecall(
     });
     child.on("close", (code) => {
       if (settled) return;
-      if (code !== 0) {
+      if (code !== 0 && code !== 3) {
         finish(new FlowingRecallError("process-failed"));
         return;
       }
@@ -210,6 +214,13 @@ export async function runFlowingRecall(
         const envelope = Schema.decodeUnknownSync(RecallCliEnvelopeSchema)(
           JSON.parse(stdout.toString("utf8")),
         );
+        const unavailableCount = envelope.result.composed.unavailable.length;
+        if (
+          (code === 0 && (!envelope.ok || unavailableCount > 0)) ||
+          (code === 3 && (envelope.ok || unavailableCount === 0))
+        ) {
+          throw new FlowingRecallError("malformed-response");
+        }
         const lanes = envelope.result.composed.lanes;
         if (
           lanes.flowingReflections.lane !== "flowing-reflections" ||
