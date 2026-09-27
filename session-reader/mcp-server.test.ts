@@ -56,6 +56,38 @@ describe("session recall MCP", () => {
     });
   });
 
+  test("project-only recall creates a project receipt and allows its separate drill-down", async () => {
+    await withClient(async (client, operations) => {
+      const recalled = await client.callTool({
+        name: "recall",
+        arguments: { query: "project-wide decision", project: "joelclaw-memory" },
+      });
+      assert.equal(recalled.isError, undefined);
+      const receipt = (
+        recalled.structuredContent as { details?: { evidenceDrilldownReceipt?: unknown } }
+      )?.details?.evidenceDrilldownReceipt;
+      assert.equal(typeof receipt, "string");
+      assert.equal(operations[0]._tag, "Recall");
+      if (operations[0]._tag !== "Recall" || typeof receipt !== "string") return;
+      assert.equal(operations[0].workstream, undefined);
+      const [payload] = receipt.split(".");
+      assert.ok(payload);
+      const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+        readonly project?: unknown;
+        readonly workstream?: unknown;
+      };
+      assert.equal(decoded.project, "joelclaw-memory");
+      assert.equal(decoded.workstream, undefined);
+
+      const drilldown = await client.callTool({
+        name: "drill_down_session_evidence",
+        arguments: { query: "project-wide decision", evidenceDrilldownReceipt: receipt },
+      });
+      assert.equal(drilldown.isError, undefined);
+      assert.equal(operations[1]._tag, "Search");
+    });
+  });
+
   test("routes recall and raw drill-down as separate operations", async () => {
     await withClient(async (client, operations) => {
       const recalled = await client.callTool({

@@ -16,7 +16,11 @@ import {
   type SessionFile,
 } from "./domain.ts";
 import { SessionOperation, SessionOperationSchema } from "./engine.ts";
-import { FlowingRecallError, runFlowingRecall } from "./flowing-recall.ts";
+import {
+  buildComposedRecallRequest,
+  FlowingRecallError,
+  runFlowingRecall,
+} from "./flowing-recall.ts";
 import { runSessionActor } from "./machine.ts";
 import { inspectDetails, renderCaptureHealth, renderInspect } from "./presenter.ts";
 import { createSessionAdapters } from "./adapters.ts";
@@ -326,6 +330,20 @@ describe("session reader domain", () => {
 });
 
 describe("flowing recall process boundary", () => {
+  test("builds a project-only request without inventing a workstream", () => {
+    const request = buildComposedRecallRequest({
+      query: "project-wide recall",
+      project: "badass-courses.drovr",
+      allowedPrivacy: ["private"],
+      includeSuperseded: false,
+      limits: { curated: 5, observations: 5, reflections: 5 },
+    }) as { scope: Record<string, unknown> };
+    assert.deepEqual(request.scope, {
+      _tag: "Project",
+      project: "badass-courses.drovr",
+    });
+  });
+
   test("keeps recall text on stdin and validates the three-lane response", async () => {
     const root = await mkdtemp(join(tmpdir(), "flowing-recall-runner-"));
     temporaryDirectories.push(root);
@@ -343,6 +361,7 @@ process.stdin.on("end", () => {
     lane,
     source: "fixture",
     scoreScale: lane === "curated-pages" ? "bm25-negated" : "unit-interval",
+    diagnostics: { conflicted_scopes: [], omitted_conflicted_count: 0 },
     health: { _tag: "Healthy" },
     items: [],
   });
@@ -383,6 +402,82 @@ process.stdin.on("end", () => {
     );
     assert.equal(result.adapter, "fixture");
     assert.equal(result.composed.lanes.flowingReflections.lane, "flowing-reflections");
+    assert.deepEqual(
+      (result.composed.lanes.flowingReflections as { diagnostics?: unknown }).diagnostics,
+      { conflicted_scopes: [], omitted_conflicted_count: 0 },
+    );
+  });
+
+  test("preserves a valid partial recall response when the CLI exits 3", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flowing-recall-partial-"));
+    temporaryDirectories.push(root);
+    const command = join(root, "fake-joelclaw");
+    await writeFile(
+      command,
+      `#!/usr/bin/env node
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  const request = JSON.parse(raw);
+  const timeoutLane = (lane) => ({
+    _tag: "RecallLaneUnavailableV1",
+    lane,
+    source: "flowing-memory-read",
+    code: "timeout",
+    message: "flowing read exceeded its deadline",
+  });
+  const curated = {
+    _tag: "RecallLaneAvailableV1",
+    lane: "curated-pages",
+    source: "fixture",
+    scoreScale: "bm25-negated",
+    health: { _tag: "Healthy" },
+    items: [],
+  };
+  const composed = {
+    _tag: "ComposedRecallResultV1",
+    schemaVersion: 1,
+    lanes: {
+      flowingReflections: timeoutLane("flowing-reflections"),
+      flowingObservations: timeoutLane("flowing-observations"),
+      curatedPages: curated,
+    },
+    request,
+    resolvedAccess: request.access,
+    resolvedScope: request.scope,
+    unavailable: [
+      timeoutLane("flowing-reflections"),
+      timeoutLane("flowing-observations"),
+    ],
+  };
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    command: "joelclaw recall",
+    result: { adapter: "flowing-memory-recall", composed },
+  }));
+  process.exitCode = 3;
+});
+`,
+    );
+    await chmod(command, 0o755);
+
+    const result = await runFlowingRecall(
+      {
+        query: "timeout regression",
+        project: "joelclaw-memory",
+        workstream: "session-recall-mcp",
+        allowedPrivacy: ["private"],
+        includeSuperseded: false,
+        limits: { curated: 5, observations: 5, reflections: 5 },
+      },
+      { command, cwd: root, signal: new AbortController().signal },
+    );
+
+    assert.equal(result.adapter, "flowing-memory-recall");
+    assert.equal(result.composed.lanes.flowingReflections._tag, "RecallLaneUnavailableV1");
+    assert.equal(result.composed.lanes.curatedPages._tag, "RecallLaneAvailableV1");
+    assert.equal(result.composed.unavailable.length, 2);
   });
 
   test("rejects invalid recall input before spawning", async () => {

@@ -22,7 +22,7 @@ const PrivacySchema = z.enum(["public", "private", "sensitive"]);
 const EvidenceReceiptPayloadSchema = z.object({
   version: z.literal(1),
   project: z.string().min(1).max(240),
-  workstream: z.string().min(1).max(240),
+  workstream: z.string().min(1).max(240).optional(),
   issuedAt: z.number().int(),
   expiresAt: z.number().int(),
   nonce: z.string().min(16).max(32),
@@ -46,7 +46,7 @@ function bounded(value: number | undefined, fallback: number, min: number, max: 
   return Math.min(max, Math.max(min, candidate));
 }
 
-function issueEvidenceReceipt(project: string, workstream: string): string {
+function issueEvidenceReceipt(project: string, workstream?: string): string {
   const issuedAt = Date.now();
   const payload = Buffer.from(
     JSON.stringify({
@@ -123,7 +123,7 @@ async function executeRecall(
   operation: Operation,
   signal: AbortSignal,
   project: string,
-  workstream: string,
+  workstream?: string,
 ) {
   const outcome = await runner(operation, signal);
   if (outcome.status !== "succeeded") return failureResult(outcome);
@@ -169,7 +169,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
     {
       instructions: [
         "Use recall for every memory request. It searches distilled reflections, observations, and curated pages.",
-        "Recall scope is exact: project is usually owner.repo and workstream is usually main, default, or the current branch.",
+        "Recall scope is exact: project is usually owner.repo; give an exact workstream such as main/default/current branch, or omit it for a project-wide read across persisted workstream heads.",
         "Prefer one or two concrete query terms. Exact two-term matches rank first; three or more terms require every term.",
         "If recall reports No projection head, correct the scope instead of searching transcripts.",
         "Keep the three lanes in canonical order and never compare scores across them.",
@@ -186,7 +186,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
     {
       title: "Flowing Recall",
       description:
-        "Start every memory request here. Search distilled reflections, observations, and curated pages in one exact scope. Project is commonly owner.repo; workstream is commonly main or default. Prefer one or two concrete query terms. Returns the signed receipt required for raw evidence drill-down.",
+        "Start every memory request here. Search distilled reflections, observations, and curated pages in one exact workstream or project-wide scope. Project is commonly owner.repo; workstream is commonly main or default. Omit workstream to search every persisted head without merging scope identities. Prefer one or two concrete query terms. Returns: bounded recall text, structured lane details, and the signed receipt required for every raw evidence drill-down.",
       inputSchema: {
         query: z
           .string()
@@ -202,7 +202,8 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
           .string()
           .min(1)
           .max(240)
-          .describe("Exact persisted branch or bookmark, commonly main or default."),
+          .optional()
+          .describe("Exact persisted branch/bookmark (commonly main or default). Omit for project-wide recall across persisted heads."),
         limit: z.number().int().min(1).max(MAX_HITS).optional(),
         includeSuperseded: z.boolean().optional(),
         allowedPrivacy: z.array(PrivacySchema).min(1).optional(),
@@ -217,7 +218,7 @@ export function createSessionRecallMcpServer(options: SessionRecallMcpOptions = 
         SessionOperation.Recall({
           query: input.query,
           project: input.project,
-          workstream: input.workstream,
+          ...(input.workstream === undefined ? {} : { workstream: input.workstream }),
           allowedPrivacy: input.allowedPrivacy ?? ["public", "private"],
           includeSuperseded: input.includeSuperseded === true,
           limits: { curated: limit, observations: limit, reflections: limit },
