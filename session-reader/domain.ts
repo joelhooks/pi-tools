@@ -194,6 +194,7 @@ function flattenTranscript(value: unknown): string {
   for (const key of [
     "role",
     "type",
+    "payload",
     "toolName",
     "name",
     "command",
@@ -204,6 +205,7 @@ function flattenTranscript(value: unknown): string {
     "stdout",
     "stderr",
     "arguments",
+    "input",
     "result",
   ]) {
     if (key in record) parts.push(flattenTranscript(record[key]));

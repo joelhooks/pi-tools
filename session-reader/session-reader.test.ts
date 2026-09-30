@@ -9,6 +9,7 @@ import {
   extractTranscript,
   InspectResultSchema,
   inspectTranscript,
+  matchesQuery,
   parseTranscript,
   redactSecrets,
   sessionMetaFromPath,
@@ -213,6 +214,26 @@ describe("session reader domain", () => {
     assert.match(rendered, /L2 message/);
     assert.match(rendered, /L3 message/);
     assert.equal(JSON.stringify(inspectDetails(result)).includes("first targetLoad"), false);
+  });
+
+  test("indexes nested Codex custom_tool_call payload.input", () => {
+    const query = "sky.get_app_state";
+    const rawLine = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        name: "mcp__node_repl__js",
+        input: "await sky.get_app_state()",
+      },
+    });
+    const transcript = parseTranscript(
+      "/tmp/codex-sessions/rollout-2026-08-09T12-06-10-session-test.jsonl",
+      rawLine,
+    );
+    const matches = transcript.entries.filter((entry) => matchesQuery(entry.text, query));
+
+    assert.ok(rawLine.includes(query));
+    assert.deepEqual(matches.map((entry) => entry.line), [1]);
   });
 
   test("schemas validate results and reject malformed operations", async () => {
