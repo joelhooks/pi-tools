@@ -1,8 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { execSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { homedir } from "node:os";
 
 const AUTOPSY_DIR = join(homedir(), ".repo-autopsy");
@@ -88,49 +88,6 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }], details: {} };
 }
 
-function copyRepoSourceToProject(
-  repoResult: { path: string; owner: string; repo: string },
-  projectCwd: string,
-  options: { refresh?: boolean; prefix?: string } = {},
-): { sourcePath: string; metadataPath: string } | string {
-  const sourceRoot = resolve(projectCwd, options.prefix ?? ".agent_sources");
-  const sourcePath = join(sourceRoot, "github.com", repoResult.owner, repoResult.repo);
-
-  if (existsSync(sourcePath)) {
-    if (!options.refresh) {
-      return `Source already exists at ${sourcePath}. Pass refresh:true to replace it.`;
-    }
-    rmSync(sourcePath, { recursive: true, force: true });
-  }
-
-  mkdirSync(sourcePath, { recursive: true });
-  cpSync(repoResult.path, sourcePath, {
-    recursive: true,
-    filter: (src) => !src.includes(`${repoResult.path}/.git`) && !src.includes(`${repoResult.path}/node_modules`),
-  });
-
-  const commit = sh(`git rev-parse HEAD`, repoResult.path);
-  const metadataPath = join(sourcePath, ".agent-source.json");
-  writeFileSync(
-    metadataPath,
-    `${JSON.stringify(
-      {
-        type: "github-repo-source",
-        owner: repoResult.owner,
-        repo: repoResult.repo,
-        remote: `https://github.com/${repoResult.owner}/${repoResult.repo}.git`,
-        commit,
-        addedAt: new Date().toISOString(),
-        note: "Project-local agent source mirror. Refresh with repo_add_source.",
-      },
-      null,
-      2,
-    )}\n`,
-  );
-
-  return { sourcePath, metadataPath };
-}
-
 export default function (pi: ExtensionAPI) {
   // Clone / update a repo
   pi.registerTool({
@@ -147,33 +104,7 @@ export default function (pi: ExtensionAPI) {
       const status = result.cached ? "📦 cached" : "🔄 fetched";
       const fileCount = sh(`find ${result.path} -type f -not -path '*/.git/*' | wc -l`);
       const langs = sh(`find ${result.path} -type f -not -path '*/.git/*' | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -10`);
-      return text(`✓ ${result.owner}/${result.repo} ready at: ${result.path} (${status})\n\nFiles: ${fileCount}\n\nTop extensions:\n${langs}\n\nUse repo_structure, repo_search, repo_deps, repo_hotspots, repo_file, repo_ast, repo_blame, repo_stats, repo_exports, repo_find, repo_add_source`);
-    },
-  });
-
-  pi.registerTool({
-    name: "repo_add_source",
-    label: "Repo: Add Agent Source",
-    description: "Add a shallow project-local mirror of a GitHub repo under .agent_sources for active dependency/source inspection.",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or full URL)" }),
-      cwd: Type.Optional(Type.String({ description: "Project directory. Defaults to the current pi process cwd." })),
-      prefix: Type.Optional(Type.String({ description: "Source directory prefix (default: .agent_sources)" })),
-      refresh: Type.Optional(Type.Boolean({ description: "Replace an existing source mirror" })),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo, params.refresh);
-      if (typeof result === "string") return text(result);
-
-      const copied = copyRepoSourceToProject(result, params.cwd ?? process.cwd(), {
-        prefix: params.prefix,
-        refresh: params.refresh,
-      });
-      if (typeof copied === "string") return text(copied);
-
-      return text(
-        `✓ Added ${result.owner}/${result.repo} as project agent source\n\nSource: ${copied.sourcePath}\nMetadata: ${copied.metadataPath}\n\nThis is a shallow source mirror for agent inspection, not a package install.`,
-      );
+      return text(`✓ ${result.owner}/${result.repo} ready at: ${result.path} (${status})\n\nFiles: ${fileCount}\n\nTop extensions:\n${langs}\n\nUse repo_structure, repo_search, repo_deps, repo_file, repo_find`);
     },
   });
 
@@ -220,25 +151,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // AST-grep
-  pi.registerTool({
-    name: "repo_ast",
-    label: "Repo: AST Search",
-    description: "AST-grep structural code search in a cloned repo",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL)" }),
-      pattern: Type.String({ description: "ast-grep pattern (e.g., 'function $NAME($$$ARGS) { $$$BODY }')" }),
-      lang: Type.Optional(Type.String({ description: "Language: ts, tsx, js, py, go, rust" })),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo);
-      if (typeof result === "string") return text(result);
-      const l = params.lang ? `--lang ${params.lang}` : "";
-      const out = sh(`ast-grep --pattern '${params.pattern}' ${l} ${result.path} 2>/dev/null | head -200`);
-      return text(truncate(out || "No matches found"));
-    },
-  });
-
   // Dependency analysis
   pi.registerTool({
     name: "repo_deps",
@@ -269,30 +181,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Hotspots
-  pi.registerTool({
-    name: "repo_hotspots",
-    label: "Repo: Hotspots",
-    description: "Find code hotspots — most changed files, largest files, TODOs, recent commits",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL)" }),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo);
-      if (typeof result === "string") return text(result);
-      const churn = sh(`git -C ${result.path} log --oneline --name-only --pretty=format: | sort | uniq -c | sort -rn | grep -v '^$' | head -15`);
-      const largest = sh(`find ${result.path} -type f -not -path '*/.git/*' -not -path '*/node_modules/*' -exec wc -l {} + 2>/dev/null | sort -rn | head -15`);
-      const todos = sh(`rg -c 'TODO|FIXME|HACK|XXX' ${result.path} --glob '!.git' 2>/dev/null | sort -t: -k2 -rn | head -10`);
-      const recent = sh(`git -C ${result.path} log --oneline -20`);
-      const parts: string[] = [];
-      if (churn) parts.push(`## Most Changed Files\n${churn}`);
-      if (largest) parts.push(`## Largest Files\n${largest}`);
-      if (todos) parts.push(`## TODOs/FIXMEs\n${todos}`);
-      if (recent) parts.push(`## Recent Commits\n${recent}`);
-      return text(truncate(parts.join("\n\n")));
-    },
-  });
-
   // Read file
   pi.registerTool({
     name: "repo_file",
@@ -318,62 +206,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Git blame
-  pi.registerTool({
-    name: "repo_blame",
-    label: "Repo: Blame",
-    description: "Git blame for a file — who wrote what",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL)" }),
-      path: Type.String({ description: "File path within repo" }),
-      start: Type.Optional(Type.Number({ description: "Start line" })),
-      end: Type.Optional(Type.Number({ description: "End line" })),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo);
-      if (typeof result === "string") return text(result);
-      const range = params.start && params.end ? `-L ${params.start},${params.end}` : "";
-      return text(sh(`git -C ${result.path} blame ${range} --date=short ${params.path} 2>/dev/null | head -100`));
-    },
-  });
-
-  // Code stats (tokei)
-  pi.registerTool({
-    name: "repo_stats",
-    label: "Repo: Stats",
-    description: "Code statistics — lines of code, languages, file counts (uses tokei)",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL)" }),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo);
-      if (typeof result === "string") return text(result);
-      return text(sh(`tokei ${result.path} --exclude .git --exclude node_modules --exclude vendor --exclude __pycache__ 2>/dev/null`));
-    },
-  });
-
-  // Export map
-  pi.registerTool({
-    name: "repo_exports",
-    label: "Repo: Exports",
-    description: "Map public API — all exports from a repo",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL)" }),
-    }),
-    async execute(_id, params) {
-      const result = ensureRepo(params.repo);
-      if (typeof result === "string") return text(result);
-      const named = sh(`rg "^export (const|function|class|type|interface|enum) " ${result.path} --glob '*.ts' --glob '*.tsx' --glob '*.js' -o -N 2>/dev/null | sort | uniq -c | sort -rn | head -30`);
-      const defaults = sh(`rg "^export default" ${result.path} --glob '*.ts' --glob '*.tsx' --glob '*.js' -l 2>/dev/null | head -20`);
-      const reexports = sh(`rg "^export \\* from|^export \\{[^}]+\\} from" ${result.path} --glob '*.ts' --glob '*.tsx' --glob '*.js' 2>/dev/null | head -30`);
-      const parts: string[] = [];
-      if (named) parts.push(`## Named Exports\n${named}`);
-      if (defaults) parts.push(`## Default Exports\n${defaults}`);
-      if (reexports) parts.push(`## Re-exports\n${reexports}`);
-      return text(truncate(parts.join("\n\n") || "No exports found"));
-    },
-  });
-
   // File find (fd)
   pi.registerTool({
     name: "repo_find",
@@ -389,27 +221,6 @@ export default function (pi: ExtensionAPI) {
       if (typeof result === "string") return text(result);
       const ext = params.extension ? `-e ${params.extension}` : "";
       return text(sh(`fd '${params.pattern}' ${result.path} ${ext} -E .git -E node_modules 2>/dev/null | head -50`) || "No matches");
-    },
-  });
-
-  // Cleanup
-  pi.registerTool({
-    name: "repo_cleanup",
-    label: "Repo: Cleanup",
-    description: "Remove a cloned repo from the autopsy cache, or 'all' to clear everything",
-    parameters: Type.Object({
-      repo: Type.String({ description: "GitHub repo (owner/repo or URL), or 'all'" }),
-    }),
-    async execute(_id, params) {
-      if (params.repo === "all") {
-        sh(`rm -rf ${AUTOPSY_DIR}`);
-        return text(`Cleared all repos from ${AUTOPSY_DIR}`);
-      }
-      const parsed = parseRepoUrl(params.repo);
-      if (!parsed) return text("Invalid repo format");
-      const p = join(AUTOPSY_DIR, parsed.owner, parsed.repo);
-      if (existsSync(p)) { sh(`rm -rf ${p}`); return text(`Removed: ${p}`); }
-      return text("Repo not in cache");
     },
   });
 }

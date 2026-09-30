@@ -408,7 +408,7 @@ const runExpand = Effect.fn("SessionEngine.expand")(function* (input: ExpandInpu
   return {
     text: renderExpansion(page),
     details: {
-      wrapper: "session_expand actor",
+      wrapper: "expand_session actor",
       ok: true,
       engine: "effect-v4+xstate-v5",
       operation: "Expand",

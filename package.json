@@ -1,7 +1,7 @@
 {
   "name": "pi-tools",
   "version": "0.4.0",
-  "description": "Joel's pi extensions, Effect/XState session reader, repo autopsy, skill shortcuts, MCQ, MCP bridge, web search, url-to-markdown, excalidraw, linear-tracker, shortlink QR",
+  "description": "Joel's pi extensions, Effect/XState session reader, repo autopsy, skill shortcuts, web search, url-to-markdown, linear-tracker, shortlink QR",
   "license": "MIT",
   "keywords": [
     "pi-package",
@@ -38,16 +38,12 @@
       "./session-reader/session-reader.ts",
       "./skill-shortcut/skill-shortcut.ts",
       "./aliases/aliases.ts",
-      "./mcq/index.ts",
       "./secrets/secrets.ts",
-      "./mcp-bridge/index.ts",
       "./web-search/web-search.ts",
       "./url-to-markdown/index.ts",
       "./bash-timeout/index.ts",
-      "./excalidraw/index.ts",
       "./linear-tracker/index.ts",
-      "./shortlink-qr/index.ts",
-      "./herdr-monitor/herdr-monitor.ts"
+      "./shortlink-qr/index.ts"
     ]
   },
   "scripts": {

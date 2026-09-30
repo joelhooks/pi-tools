@@ -157,31 +157,4 @@ export default function (pi: ExtensionAPI) {
       return text(result.data);
     },
   });
-
-  pi.registerTool({
-    name: "secrets_env",
-    label: "Secrets: Env",
-    description: "Generate a .env file from .secrets.json in the working directory. Leases all listed secrets and writes KEY=value pairs.",
-    parameters: Type.Object({
-      force: Type.Optional(Type.Boolean({ description: "Overwrite existing .env" })),
-    }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      try {
-        const flag = params.force ? " --force" : "";
-        const out = execSync(`secrets env${flag}`, {
-          encoding: "utf-8",
-          timeout: 15000,
-          cwd: ctx.cwd,
-        }).trim();
-        try {
-          const result = JSON.parse(out);
-          return text(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
-        } catch {
-          return text(out);
-        }
-      } catch (e: any) {
-        return text(`Failed: ${e.stderr || e.message}`);
-      }
-    },
-  });
 }

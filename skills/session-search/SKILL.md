@@ -31,7 +31,6 @@ Never merge lane scores. Raw transcripts are explicit drill-down evidence, not a
 - `session_search` — compatibility-only local evidence search. Never use it as memory recall. Remote search stays disabled until the CLI accepts stdin.
 - `session_context` — bounded structured extraction from one session.
 - `session_inspect` — exact line evidence around one regex.
-- `session_expand` — bounded continuation through an opaque cursor.
 - `session_chunks` — bounded transcript snippets; excludes the current session by default.
 - `session_capture_status` — native adapter and capture-delivery health.
 

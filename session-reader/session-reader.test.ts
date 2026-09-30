@@ -602,7 +602,7 @@ describe("session reader actor", () => {
   });
 });
 
-test("registers the compatibility tool surface", () => {
+test("registers the retained tool surface", () => {
   const names: string[] = [];
   sessionReader({
     registerTool(tool: { readonly name: string }) {
@@ -613,12 +613,9 @@ test("registers the compatibility tool surface", () => {
     "flowing_recall",
     "session_search",
     "session_capture_status",
-    "sessions",
     "session_context",
     "session_inspect",
-    "session_expand",
     "session_chunks",
-    "session_tasks",
   ]);
 });
 

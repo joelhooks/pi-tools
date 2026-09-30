@@ -8,7 +8,7 @@
 
 # pi-tools
 
-> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Run autonomous background loops. Lease secrets safely. Bridge any MCP server with OAuth. Quit when you want to quit.
+> Power tools for [pi](https://github.com/mariozechner/pi-coding-agent). Clone repos and tear them apart. Run autonomous background loops. Lease secrets safely. Quit when you want to quit.
 
 ## Install
 
@@ -25,9 +25,8 @@ pi config  # enable/disable individual extensions
 
 | Extension           | What                                                                                                                            |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `repo-autopsy` 🔬   | Clone GitHub repos, analyze them, and add active dependency source mirrors under `.agent_sources/`                              |
-| `secrets` 🛡️        | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit, env generation |
-| `mcp-bridge` 🌉     | Connect to any remote MCP server with OAuth — auto-registers tools into pi                                                      |
+| `repo-autopsy` 🔬   | Clone GitHub repos and inspect their files, structure, and dependencies                              |
+| `secrets` 🛡️        | Lease secrets with TTLs via [agent-secrets](https://github.com/joelhooks/agent-secrets) — status, revoke, audit |
 | `session-reader` 📖 | Flowing recall plus bounded Pi/Claude/Codex/Cursor/Grok/OpenCode transcript evidence                                            |
 | `skill-shortcut` ⚡ | `$skill-name` autocomplete shortcut for `/skill:skill-name`                                                                     |
 | `aliases` 🚪        | `/quit` and `/q` → `/exit`                                                                                                      |
@@ -38,9 +37,9 @@ The herdr turn-ping extension and wait CLI now live in [joelhooks/herdr-pings](h
 
 ## repo-autopsy
 
-Repo analysis tools clone into `~/.repo-autopsy` for cacheable inspection. `repo_add_source` additionally copies a repo into the current project under `.agent_sources/github.com/<owner>/<repo>` with `.agent-source.json` metadata, so agents can inspect active dependency source alongside project code.
+Repo analysis tools clone into `~/.repo-autopsy` for cacheable inspection.
 
-Tools: `repo_clone`, `repo_structure`, `repo_search`, `repo_ast`, `repo_deps`, `repo_hotspots`, `repo_file`, `repo_blame`, `repo_stats`, `repo_exports`, `repo_find`, `repo_cleanup`, `repo_add_source`
+Tools: `repo_clone`, `repo_structure`, `repo_search`, `repo_deps`, `repo_file`, `repo_find`
 
 This repo keeps the current Pi source mirrored at `.agent_sources/github.com/earendil-works/pi-mono` for SDK receipts.
 
@@ -70,7 +69,6 @@ Primary Pi tools:
 - `session_capture_status` — verify native adapters and Pi/Claude/Codex delivery state
 - `session_context` — bounded extraction for a session id or transcript path
 - `session_inspect` — deterministic line inspection around a regex
-- `session_expand` — bounded opaque-cursor continuation
 - `session_chunks` — compact chunk search with safety caps
 
 The read-only surface is available through MCP. Executor is the preferred catalog and Code Mode owner. Pi calls one `executor_execute` tool. Executor starts with recall. If recall reports `No projection head`, it calls `discover_scopes` and retries recall with one returned exact pair instead of guessing or searching transcripts. Native evidence search requires the signed receipt from a successful recall.
@@ -124,7 +122,7 @@ After installation, restart the user LaunchAgent and run the read-only scope-dis
 
 `pi-session-recall-mcp` remains the stdio rollback path. Do not run both transports as active catalog owners.
 
-MCP tools: `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `capture_status`.
+MCP tools: `recall`, `discover_scopes`, `drill_down_session_evidence`, `inspect_session`, `expand_session`, `session_context`, `drill_down_session_chunks`, and `memory_skill`.
 
 `discover_scopes` accepts optional bounded `project_hint` and `workstream_hint`, a limit from 1 through 50 (default 10), and a required non-empty unique `allowed_privacy` grant. It returns semantic scope metadata, not raw evidence, so it neither requires nor mints an evidence receipt. Hints and the typed query travel only over child stdin. The adapter executes only the consumer-pinned standalone under the root-owned immutable hierarchy, re-proves every managed directory plus exact manifest and artifact owner, type, mode, size, identity, source, and digest before credential lease and immediately before spawn, leases only `flowing_memory_runtime_database_url` through the canonical secrets CLI, rejects any producer stderr byte, and gives the child a minimal environment.
 
@@ -144,38 +142,6 @@ Pi `session_chunks` wrapper safety defaults:
 - excludes current-session matches by default when Pi exposes the current session id/file; pass `exclude_current: false` to include them intentionally
 
 Use direct `joelclaw session chunks` only when you really want the raw CLI behavior.
-
-## mcp-bridge
-
-Connect to any remote MCP server that supports OAuth. Tools are auto-discovered and registered into pi, prefixed by server name.
-
-```bash
-# Add a server
-/mcp-add notion https://mcp.notion.com/mcp
-/mcp-add linear https://mcp.linear.app/mcp
-
-# Authenticate (opens browser)
-/mcp-login notion
-
-# Check status
-/mcp-list
-
-# Reconnect after restart (auto on session start)
-/mcp-reconnect
-
-# Remove
-/mcp-remove notion
-```
-
-Commands: `/mcp-add`, `/mcp-remove`, `/mcp-login`, `/mcp-logout`, `/mcp-list`, `/mcp-reconnect`
-
-Tool: `mcp_status`
-
-Bridge metadata is stored in `~/.pi/mcp-bridge/` (OAuth client registrations, cached tokens, PKCE verifiers). OAuth tokens are also written to Pi's native MCP auth path at `~/.pi/agent/mcp-oauth/<name>/tokens.json` so Pi-compatible flows can reuse them. Tools from each server are registered as `<name>_<tool>` (e.g., `notion_search`, `notion_update_block`).
-
-On session start, auto-connects to all servers with saved tokens. If tokens are expired or invalid, the bridge clears stale credentials and shows a status warning — run `/mcp-login <name>` to re-auth.
-
-Requires `@modelcontextprotocol/sdk` (installed by `setup.sh`).
 
 ## shortlink-qr
 
@@ -215,7 +181,7 @@ Lease credentials safely with TTLs. No env files committed, no plaintext on disk
 Use secrets_lease to get the slack_bot_token with a 30 minute TTL
 ```
 
-Tools: `secrets_lease`, `secrets_status`, `secrets_revoke`, `secrets_audit`, `secrets_env`
+Tools: `secrets_lease`, `secrets_status`, `secrets_revoke`, `secrets_audit`
 
 Requires [agent-secrets](https://github.com/joelhooks/agent-secrets) daemon running.
 

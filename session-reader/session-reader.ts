@@ -15,7 +15,6 @@ const CHUNKS_SAFE_CONTEXT = 2;
 const CHUNKS_LARGE_CONTEXT = 10;
 const INSPECT_MAX_BEFORE = 50;
 const INSPECT_MAX_AFTER = 200;
-const EXPAND_MAX_LIMIT = 40;
 const ENGINE_LABEL = "Effect v4 + XState v5 session reader";
 
 const SessionAgentSchema = Type.Union([
@@ -284,50 +283,6 @@ export default function sessionReader(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "sessions",
-    label: "Sessions",
-    description: "Compatibility search surface backed by the Effect/XState session reader.",
-    parameters: Type.Object({
-      query: Type.Optional(Type.String()),
-      agents: Type.Optional(Type.Array(SessionAgentSchema)),
-      limit: Type.Optional(Type.Number()),
-      cwd_filter: Type.Optional(Type.String()),
-      source: Type.Optional(SessionSourceSchema),
-      machine: Type.Optional(Type.String()),
-      extract: Type.Optional(Type.Boolean()),
-    }),
-    async execute(_id, params, signal, onUpdate, ctx) {
-      const warnings: string[] = [];
-      const limit = boundedInteger(params.limit, {
-        fallback: DEFAULT_LIMIT,
-        min: 1,
-        max: 20,
-        label: "limit",
-        warnings,
-      });
-      const agent = (params.agents?.[0] ?? "all") as SessionAgentFilter;
-      return executeOperation(
-        SessionOperation.Search({
-          query: params.query ?? params.cwd_filter ?? ctx.cwd,
-          agent,
-          source: (params.source ?? "local") as SessionSource,
-          machine: params.machine ?? hostnameShort(),
-          limit,
-          maxFiles: DEFAULT_MAX_FILES,
-          cwd: ctx.cwd,
-          extract: params.extract !== false,
-        }),
-        signal,
-        onUpdate,
-      );
-    },
-    renderCall(args, theme) {
-      return renderToolCall("sessions", args.query ?? args.cwd_filter, theme);
-    },
-    renderResult,
-  });
-
-  pi.registerTool({
     name: "session_context",
     label: "Session Context",
     description:
@@ -405,45 +360,6 @@ export default function sessionReader(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "session_expand",
-    label: "Session Expand",
-    description:
-      "Safely continue a bounded transcript page with an opaque cursor. Expansion never returns the full session or replaces existing context.",
-    parameters: Type.Object({
-      session_id: Type.String(),
-      cursor: Type.Optional(Type.String({ description: "Opaque next_cursor from a prior page." })),
-      direction: Type.Optional(Type.Union([Type.Literal("forward"), Type.Literal("backward")])),
-      limit: Type.Optional(Type.Number()),
-    }),
-    async execute(_id, params, signal, onUpdate) {
-      const warnings: string[] = [];
-      const limit = boundedInteger(params.limit, {
-        fallback: 12,
-        min: 1,
-        max: EXPAND_MAX_LIMIT,
-        label: "limit",
-        warnings,
-      });
-      const result = await executeOperation(
-        SessionOperation.Expand({
-          sessionId: params.session_id,
-          cursor: params.cursor,
-          direction: params.direction as "forward" | "backward" | undefined,
-          limit,
-        }),
-        signal,
-        onUpdate,
-      );
-      if (warnings.length > 0) result.details.warnings = warnings;
-      return result;
-    },
-    renderCall(args, theme) {
-      return renderToolCall("session_expand", args.session_id, theme);
-    },
-    renderResult,
-  });
-
-  pi.registerTool({
     name: "session_chunks",
     label: "Session Chunks",
     description:
@@ -507,29 +423,6 @@ export default function sessionReader(pi: ExtensionAPI): void {
     },
     renderCall(args, theme) {
       return renderToolCall("session_chunks", args.query, theme);
-    },
-    renderResult,
-  });
-
-  pi.registerTool({
-    name: "session_tasks",
-    label: "Session Tasks Deprecated",
-    description:
-      "Deprecated compatibility surface. The Effect/XState actor runs each request directly.",
-    parameters: Type.Object({ task_id: Type.Optional(Type.Number()) }),
-    async execute() {
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "No background session reader task registry exists. Each request is one cancellable XState actor.",
-          },
-        ],
-        details: { wrapper: "session_tasks deprecated", ok: true, tasks: [] },
-      };
-    },
-    renderCall(_args, theme) {
-      return renderToolCall("session_tasks deprecated", undefined, theme);
     },
     renderResult,
   });
