@@ -89,14 +89,48 @@ export type FlowingRecallErrorKind =
   | "process-failed"
   | "timeout";
 
+/** What the CLI said when it refused or crashed: its exit code and, when present, its JSON error. */
+export interface FlowingRecallCliFailure {
+  readonly exitCode: number | null;
+  readonly code?: string;
+  readonly message?: string;
+}
+
+const MAX_CLI_ERROR_CHARS = 300;
+
 export class FlowingRecallError extends Error {
   readonly _tag = "FlowingRecallError";
   readonly kind: FlowingRecallErrorKind;
+  readonly cli?: FlowingRecallCliFailure;
 
-  constructor(kind: FlowingRecallErrorKind) {
-    super(`Flowing recall failed: ${kind}`);
+  constructor(kind: FlowingRecallErrorKind, cli?: FlowingRecallCliFailure) {
+    const detail =
+      cli === undefined
+        ? ""
+        : ` (joelclaw recall exited ${cli.exitCode ?? "by signal"}${cli.code ? `: ${cli.code}` : ""}${cli.message ? ` ${cli.message}` : ""})`;
+    super(`Flowing recall failed: ${kind}${detail}`);
     this.kind = kind;
+    if (cli !== undefined) this.cli = cli;
     this.name = this._tag;
+  }
+}
+
+const CliErrorEnvelopeSchema = Schema.Struct({
+  ok: Schema.Literal(false),
+  error: Schema.Struct({ code: Schema.String, message: Schema.String }),
+});
+
+/** Reads the CLI's `{ ok: false, error: { code, message } }` envelope; never throws. */
+export function cliFailureFrom(exitCode: number | null, stdout: string): FlowingRecallCliFailure {
+  try {
+    const envelope = Schema.decodeUnknownSync(CliErrorEnvelopeSchema)(JSON.parse(stdout));
+    return {
+      exitCode,
+      code: envelope.error.code.slice(0, 80),
+      message: envelope.error.message.slice(0, MAX_CLI_ERROR_CHARS),
+    };
+  } catch {
+    return { exitCode };
   }
 }
 
@@ -207,7 +241,9 @@ export async function runFlowingRecall(
     child.on("close", (code) => {
       if (settled) return;
       if (code !== 0 && code !== 3) {
-        finish(new FlowingRecallError("process-failed"));
+        finish(
+          new FlowingRecallError("process-failed", cliFailureFrom(code, stdout.toString("utf8"))),
+        );
         return;
       }
       try {

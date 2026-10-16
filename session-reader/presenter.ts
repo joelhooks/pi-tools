@@ -172,6 +172,27 @@ export function expansionDetails(page: ExpansionPage): Record<string, unknown> {
   };
 }
 
+/** Health and coverage caveats an agent needs before trusting an empty or partial lane. */
+function laneNotes(health: unknown, diagnostics: unknown): string | undefined {
+  const notes: string[] = [];
+  if (isRecord(health) && typeof health._tag === "string" && health._tag !== "Healthy") {
+    notes.push(`health: ${health._tag}`);
+  }
+  if (isRecord(diagnostics)) {
+    if (diagnostics.discovery_truncated === true) {
+      notes.push(
+        `searched the ${String(diagnostics.searched_workstreams ?? "?")} most recently active workstreams; older ones were not searched`,
+      );
+    }
+    if (typeof diagnostics.omitted_conflicted_count === "number" && diagnostics.omitted_conflicted_count > 0) {
+      notes.push(
+        `${diagnostics.omitted_conflicted_count} matches omitted for ambiguous supersession`,
+      );
+    }
+  }
+  return notes.length > 0 ? notes.join("; ") : undefined;
+}
+
 export function renderFlowingRecall(result: ComposedRecallResultBoundary): string {
   const lanes = [
     result.lanes.flowingReflections,
@@ -185,9 +206,12 @@ export function renderFlowingRecall(result: ComposedRecallResultBoundary): strin
   for (const lane of lanes) {
     lines.push("", `## ${lane.lane}`);
     if (lane._tag === "RecallLaneUnavailableV1") {
-      lines.push(`- unavailable: ${lane.code}`);
+      const message = compactText(lane.message, ENTRY_PREVIEW_CHARS);
+      lines.push(`- unavailable: ${lane.code}${message ? ` — ${message}` : ""}`);
       continue;
     }
+    const notes = laneNotes(lane.health, lane.diagnostics);
+    if (notes) lines.push(`- ${notes}`);
     if (lane.items.length === 0) {
       lines.push("- no matching items");
       continue;

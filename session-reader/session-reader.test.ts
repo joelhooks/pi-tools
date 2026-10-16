@@ -23,7 +23,12 @@ import {
   runFlowingRecall,
 } from "./flowing-recall.ts";
 import { runSessionActor } from "./machine.ts";
-import { inspectDetails, renderCaptureHealth, renderInspect } from "./presenter.ts";
+import {
+  inspectDetails,
+  renderCaptureHealth,
+  renderFlowingRecall,
+  renderInspect,
+} from "./presenter.ts";
 import { createSessionAdapters } from "./adapters.ts";
 import { assessCaptureHealth, type CaptureFileStatus, capturePathSpecs } from "./capture-paths.ts";
 import sessionReader from "./session-reader.ts";
@@ -501,6 +506,77 @@ process.stdin.on("end", () => {
     assert.equal(result.composed.unavailable.length, 2);
   });
 
+  test("surfaces the CLI's error code and message when it refuses the request", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flowing-recall-refused-"));
+    temporaryDirectories.push(root);
+    const command = join(root, "fake-joelclaw");
+    await writeFile(
+      command,
+      `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    command: "joelclaw recall",
+    result: null,
+    error: {
+      code: "RECALL_REQUEST_INVALID",
+      message: "The private request does not satisfy ComposedRecallRequestV1",
+    },
+  }));
+  process.exitCode = 1;
+});
+`,
+    );
+    await chmod(command, 0o755);
+
+    await assert.rejects(
+      runFlowingRecall(
+        {
+          query: "project-wide query",
+          project: "joelclaw-memory",
+          allowedPrivacy: ["private"],
+          includeSuperseded: false,
+          limits: { curated: 5, observations: 5, reflections: 5 },
+        },
+        { command, cwd: root, signal: new AbortController().signal },
+      ),
+      (error) =>
+        error instanceof FlowingRecallError &&
+        error.kind === "process-failed" &&
+        error.cli?.exitCode === 1 &&
+        error.cli.code === "RECALL_REQUEST_INVALID" &&
+        error.message.includes("RECALL_REQUEST_INVALID") &&
+        error.message.includes("does not satisfy ComposedRecallRequestV1"),
+    );
+  });
+
+  test("reports only the exit code when a crashed CLI prints no error envelope", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flowing-recall-crashed-"));
+    temporaryDirectories.push(root);
+    const command = join(root, "fake-joelclaw");
+    await writeFile(command, "#!/bin/sh\ncat >/dev/null\necho not json\nexit 2\n");
+    await chmod(command, 0o755);
+
+    await assert.rejects(
+      runFlowingRecall(
+        {
+          query: "crash",
+          project: "joelclaw-memory",
+          allowedPrivacy: ["private"],
+          includeSuperseded: false,
+          limits: { curated: 5, observations: 5, reflections: 5 },
+        },
+        { command, cwd: root, signal: new AbortController().signal },
+      ),
+      (error) =>
+        error instanceof FlowingRecallError &&
+        error.cli?.exitCode === 2 &&
+        error.cli.code === undefined &&
+        error.message === "Flowing recall failed: process-failed (joelclaw recall exited 2)",
+    );
+  });
+
   test("rejects invalid recall input before spawning", async () => {
     await assert.rejects(
       runFlowingRecall(
@@ -516,6 +592,55 @@ process.stdin.on("end", () => {
       ),
       (error) => error instanceof FlowingRecallError && error.kind === "invalid-input",
     );
+  });
+});
+
+describe("flowing recall presenter", () => {
+  test("shows lane messages, degraded health, truncation and omitted conflicts", () => {
+    const text = renderFlowingRecall({
+      _tag: "ComposedRecallResultV1",
+      schemaVersion: 1,
+      lanes: {
+        flowingReflections: {
+          _tag: "RecallLaneAvailableV1",
+          lane: "flowing-reflections",
+          source: "flowing-memory-read",
+          scoreScale: "unit-interval",
+          health: { _tag: "Failed", detail: "flowing projection failed" },
+          diagnostics: {
+            conflicted_scopes: [],
+            omitted_conflicted_count: 79,
+            discovery_truncated: true,
+            searched_workstreams: 50,
+          },
+          items: [],
+        },
+        flowingObservations: {
+          _tag: "RecallLaneUnavailableV1",
+          lane: "flowing-observations",
+          source: "flowing-memory-read",
+          code: "timeout",
+          message: "flowing recall read exceeded its 25000ms deadline",
+        },
+        curatedPages: {
+          _tag: "RecallLaneAvailableV1",
+          lane: "curated-pages",
+          source: "fixture",
+          scoreScale: "bm25-negated",
+          health: { _tag: "Healthy" },
+          items: [],
+        },
+      },
+      request: {},
+      resolvedAccess: {},
+      resolvedScope: {},
+      unavailable: [],
+    });
+    assert.match(text, /health: Failed/u);
+    assert.match(text, /searched the 50 most recently active workstreams/u);
+    assert.match(text, /79 matches omitted for ambiguous supersession/u);
+    assert.match(text, /unavailable: timeout — flowing recall read exceeded its 25000ms deadline/u);
+    assert.doesNotMatch(text.split("## curated-pages")[1] ?? "", /health:/u);
   });
 });
 
