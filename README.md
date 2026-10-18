@@ -175,11 +175,15 @@ Command shortcut:
 
 ## secrets
 
-Lease credentials safely with TTLs. No env files committed, no plaintext on disk.
+`secrets_lease` returns the secret value on success. Successful values still enter the agent transcript; use only when that disclosure is intended. It does not write env files.
 
+```text
+secrets_lease {"name":"slack_bot_token","ttl":"30m","client_id":"pi-agent"}
 ```
-Use secrets_lease to get the slack_bot_token with a 30 minute TTL
-```
+
+The CLI runs directly with an argument array, without a shell. Names must match `^[A-Za-z0-9._:-]{1,128}$`, client IDs `^[A-Za-z0-9._:-]{1,64}$`, and TTLs `^\d+[smh]$` (for example, `30m` or `1h`). Defaults are `1h` and `pi-agent`. Invalid inputs never spawn the CLI. Success requires exit 0 and non-empty trimmed stdout, even when the value contains `error`.
+
+Failures always contain three lines: `secrets_lease failed: …`, `Why: …`, and `Next: …`. The next line gives a tool call or command for invalid input, unknown names, daemon connection failures, timeouts, or unknown failures. Only bounded, recognised stderr diagnostics or JSON failure envelopes select the failure category. Raw stdout, stderr, JSON fields, and exception messages are never copied into failure text. Unknown failures point to `secrets_audit {"tail": 5}` and `secrets_status {}`. After starting a missing daemon with `secrets serve &`, or checking status after a timeout, retry the original lease.
 
 Tools: `secrets_lease`, `secrets_status`, `secrets_revoke`, `secrets_audit`
 
