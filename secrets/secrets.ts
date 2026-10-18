@@ -1,15 +1,15 @@
 /**
- * agent-secrets — Pi tool for leasing secrets from the agent-secrets daemon.
- * 
- * Wraps the `secrets` CLI with proper HATEOAS responses.
- * Agents can lease credentials with TTLs, check status, revoke.
+ * agent-secrets — inject leased values into a child's environment, not context.
+ * Wraps the `secrets` CLI; keeps status, revoke and audit compatibility.
  * 
  * Requires: https://github.com/joelhooks/agent-secrets
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import type { Static } from "@sinclair/typebox";
+import { redactingPipe, secretPatterns } from "./redaction.ts";
 
 type SecretsResult = { success: boolean; data: unknown };
 
@@ -85,12 +85,12 @@ function leaseFailure(kind: LeaseFailure, params: LeaseParams): string {
     client: {
       what: "invalid client_id",
       why: "client_id must match ^[A-Za-z0-9._:-]{1,64}$.",
-      next: `secrets_lease ${JSON.stringify({ ...params, client_id: "pi-agent" })}`,
+      next: 'secrets_exec {"env":{"API_KEY":"<name>"},"command":["<cmd>"],"ttl":"1h"}',
     },
     ttl: {
       what: "invalid TTL",
       why: "ttl must match ^\\d+[smh]$ (for example, 15m or 1h).",
-      next: `secrets_lease ${JSON.stringify({ ...params, ttl: "1h" })}`,
+      next: 'secrets_exec {"env":{"API_KEY":"<name>"},"command":["<cmd>"],"ttl":"1h"}',
     },
     missing: {
       what: "unknown secret",
@@ -147,42 +147,153 @@ function classifyLeaseDiagnostic(output: unknown, allowPlainText: boolean): Leas
   }
 }
 
+const execParameters = Type.Object({
+  env: Type.Record(Type.String({ pattern: "^[A-Z_][A-Z0-9_]{0,63}$" }), Type.String()),
+  command: Type.Array(Type.String(), { minItems: 1, description: "Literal argv, not a shell string" }),
+  cwd: Type.Optional(Type.String()),
+  timeout_seconds: Type.Optional(Type.Number({ minimum: 0, exclusiveMinimum: 0, maximum: 1800, default: 120 })),
+  ttl: Type.Optional(Type.String({ default: "1h" })),
+});
+type ExecParams = Static<typeof execParameters>;
+
+function failure(what: string, why: string, next: string) {
+  return text(`secrets_exec failed: ${what}\nWhy: ${why}\nNext: ${next}`);
+}
+const example = 'secrets_exec {"env":{"API_KEY":"<name>"},"command":["<cmd>"],"ttl":"1h"}';
+function exactMatch(pattern: RegExp, value: string): boolean { return pattern.exec(value)?.[0] === value; }
+
+export async function executeSecrets(input: unknown) {
+  // Validate every input before ANY lease or command spawn, including callers
+  // that bypass Pi's schema validation. Do not repeat untrusted input in errors.
+  if (!input || typeof input !== "object" || !("env" in input) || !input.env
+    || typeof input.env !== "object" || Array.isArray(input.env)) {
+    return failure("invalid env", "env must map environment variable names to secret names.", example);
+  }
+  const entries = Object.entries(input.env);
+  for (const [variable, name] of entries) {
+    if (!exactMatch(/^[A-Z_][A-Z0-9_]{0,63}$/, variable)) return failure("invalid environment variable", "Use ^[A-Z_][A-Z0-9_]{0,63}$ for every env key.", example);
+    if (typeof name !== "string" || !exactMatch(/^[A-Za-z0-9._:-]{1,128}$/, name)) return failure("invalid secret name", `Invalid name for ${variable}; use ^[A-Za-z0-9._:-]{1,128}$.`, "secrets_status {}; bash: secrets list");
+  }
+  if (!("command" in input) || !Array.isArray(input.command) || !input.command.length
+    || input.command.some((arg: unknown) => typeof arg !== "string" || arg.includes("\0")) || !input.command[0]) {
+    return failure("invalid command", "command must be a non-empty argv array of NUL-free strings, starting with an executable.", example);
+  }
+  if ("cwd" in input && (typeof input.cwd !== "string" || !input.cwd || input.cwd.includes("\0"))) return failure("invalid cwd", "cwd must be a non-empty NUL-free directory path.", example);
+  if ("ttl" in input && (typeof input.ttl !== "string" || !exactMatch(/^\d+[smh]$/, input.ttl))) return failure("invalid TTL", "ttl must match ^\\d+[smh]$ (for example, 15m or 1h).", example);
+  if ("timeout_seconds" in input && (typeof input.timeout_seconds !== "number" || !Number.isFinite(input.timeout_seconds) || input.timeout_seconds <= 0 || input.timeout_seconds > 1800)) return failure("invalid timeout", "timeout_seconds must be greater than 0 and at most 1800; default 120.", example);
+  // SAFETY: all ExecParams fields have been validated above, not only by TypeBox.
+  const params = input as ExecParams;
+  const started = performance.now();
+  const values: string[] = [];
+  const environment = { ...process.env };
+  for (const [variable, name] of Object.entries(params.env)) {
+    const request = { name, ttl: params.ttl ?? "1h", client_id: "pi-agent" };
+    let kind: LeaseFailure = "unknown";
+    try {
+      const value = execFileSync("secrets", ["lease", name, "--ttl", request.ttl, "--client-id", request.client_id],
+        { encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+      if (value && !value.includes("\0")) { values.push(value); environment[variable] = value; continue; }
+    } catch (error: unknown) {
+      // Never interpolate an exception: it may contain credentials and output.
+      if (error && typeof error === "object") {
+        if ("code" in error && error.code === "ETIMEDOUT") kind = "timeout";
+        else {
+          if ("stderr" in error) kind = classifyLeaseDiagnostic(error.stderr, true);
+          if (kind === "unknown" && "stdout" in error) kind = classifyLeaseDiagnostic(error.stdout, false);
+        }
+      }
+    }
+    const guidance = leaseFailure(kind, request).replace("secrets_lease failed:", `secrets_exec failed: lease for ${variable} (${name}):`);
+    return redactedText(guidance, values);
+  }
+  const patterns = secretPatterns(values);
+  return await new Promise<ReturnType<typeof text>>((resolve) => {
+    let remaining = 50 * 1024;
+    let truncated = false;
+    let stdout = "";
+    let stderr = "";
+    const capture = (stream: "stdout" | "stderr", output: string) => {
+      const bytes = Buffer.from(output);
+      let kept = bytes.subarray(0, remaining).toString("utf8");
+      // Drop a replacement introduced by cutting a UTF-8 codepoint at the cap.
+      if (Buffer.byteLength(kept) > remaining) kept = kept.slice(0, -1);
+      const size = Buffer.byteLength(kept);
+      remaining -= size;
+      if (bytes.length > size) truncated = true;
+      if (stream === "stdout") stdout += kept; else stderr += kept;
+    };
+    const out = redactingPipe(patterns, (s) => capture("stdout", s));
+    const err = redactingPipe(patterns, (s) => capture("stderr", s));
+    let timedOut = false;
+    let spawnCode: string | undefined;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(params.command[0], params.command.slice(1), {
+        cwd: params.cwd, env: environment, shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      resolve(failure("command could not start", "No child diagnostics were disclosed.", example));
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      // Kill the owned process group, including explicit-shell descendants that
+      // may otherwise keep stdout open forever. No process-name matching.
+      try {
+        if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch { /* The child already exited. Its close event still settles. */ }
+    }, (params.timeout_seconds ?? 120) * 1000);
+    child.stdout?.on("data", (chunk: Buffer) => out.write(chunk));
+    child.stderr?.on("data", (chunk: Buffer) => err.write(chunk));
+    child.on("error", (error: NodeJS.ErrnoException) => { spawnCode = error.code ?? "UNKNOWN"; });
+    child.on("close", (exit_code, signal) => {
+      clearTimeout(timer);
+      out.end(); err.end();
+      const result = { exit_code, signal, duration_ms: Math.round(performance.now() - started),
+        injected_vars: Object.keys(params.env), stdout, stderr, truncated,
+        ...(truncated ? { note: "Output truncated at 50 KB (combined stdout and stderr)." } : {}) };
+      const details = JSON.stringify(result);
+      let output = details;
+      if (timedOut) output = `secrets_exec failed: command timed out\nWhy: Deadline exceeded; process group killed. Partial redacted result: ${details}\nNext: Inspect the redacted output, then retry secrets_exec with timeout_seconds up to 1800.`;
+      else if (spawnCode) {
+        // Shell quoting prevents the repair hint from becoming an injection.
+        const quoted = /^[A-Za-z0-9_./-]+$/.test(params.command[0]) ? params.command[0] : "'" + params.command[0].replace(/'/g, "'\\''").replace(/[\r\n]/g, "") + "'";
+        output = `secrets_exec failed: command could not start\nWhy: ${spawnCode === "ENOENT" ? "Executable or cwd not found" : "Spawn refused; check executable permissions and cwd"}. Redacted result: ${details}\nNext: bash: which ${quoted}`;
+      } else if (exit_code !== 0) output = `secrets_exec exited: ${exit_code ?? signal}\nWhy: Command did not exit successfully. Redacted result: ${details}\nNext: Inspect the redacted output and fix the command before retrying secrets_exec.`;
+      resolve(redactedText(output, values));
+    });
+  });
+}
+
+function redactedText(output: string, values: string[]) {
+  let safe = "";
+  const pipe = redactingPipe(secretPatterns(values), (s) => { safe += s; });
+  pipe.write(Buffer.from(output)); pipe.end();
+  return text(safe);
+}
+
 export default function (pi: ExtensionAPI) {
+  pi.registerTool({
+    name: "secrets_exec",
+    label: "Secrets: Exec",
+    description: "Run an argv command with secrets injected into its environment, never returned as values. Output is redacted and capped at 50 KB. Shells must be explicit; do not echo or transform credentials.",
+    parameters: execParameters,
+    async execute(_id, params) { return executeSecrets(params); },
+  });
 
   pi.registerTool({
     name: "secrets_lease",
     label: "Secrets: Lease",
-    description: "Lease a secret from agent-secrets with a TTL. Returns only the secret value. Use for API keys, tokens, credentials needed for a task.",
+    description: "Retired: never returns values. Returns instructions for secrets_exec environment injection instead.",
     parameters: Type.Object({
       name: Type.String({ description: "Secret name (e.g., slack_bot_token, kv_rest_api_url)" }),
       ttl: Type.Optional(Type.String({ description: "Time-to-live (default: 1h). Examples: 15m, 1h, 4h" })),
       client_id: Type.Optional(Type.String({ description: "Client identifier for audit trail" })),
     }),
     async execute(_id, params) {
-      const ttl = params.ttl ?? "1h";
-      const client = params.client_id ?? "pi-agent";
-      const request = { name: params.name, ttl, client_id: client };
-      if (params.name.match(/^[A-Za-z0-9._:-]{1,128}$/)?.[0] !== params.name) return text(leaseFailure("name", request));
-      if (ttl.match(/^\d+[smh]$/)?.[0] !== ttl) return text(leaseFailure("ttl", request));
-      if (client.match(/^[A-Za-z0-9._:-]{1,64}$/)?.[0] !== client) return text(leaseFailure("client", request));
-      try {
-        const value = execFileSync(
-          "secrets", ["lease", params.name, "--ttl", ttl, "--client-id", client],
-          { encoding: "utf-8", timeout: 10000, stdio: ["ignore", "pipe", "pipe"] }
-        ).trim();
-        return text(value ? value : leaseFailure("unknown", request));
-      } catch (error: unknown) {
-        // Never read error.message: Node may embed the command and child output.
-        let kind: LeaseFailure = "unknown";
-        if (error && typeof error === "object") {
-          if ("code" in error && error.code === "ETIMEDOUT") kind = "timeout";
-          else {
-            if ("stderr" in error) kind = classifyLeaseDiagnostic(error.stderr, true);
-            if (kind === "unknown" && "stdout" in error) kind = classifyLeaseDiagnostic(error.stdout, false);
-          }
-        }
-        return text(leaseFailure(kind, request));
-      }
+      const variable = (params.name.toUpperCase().replace(/[^A-Z0-9_]/g, "_").replace(/^[0-9]/, "_$&").slice(0, 64) || "SECRET");
+      return text(`secrets_lease no longer returns values: they land in transcripts.\nWhy: secrets now run through secrets_exec, which injects them into one command's environment.\nNext: secrets_exec ${JSON.stringify({ env: { [variable]: params.name }, command: ["<cmd>", "..."] })}`);
     },
   });
 

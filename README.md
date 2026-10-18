@@ -175,17 +175,31 @@ Command shortcut:
 
 ## secrets
 
-`secrets_lease` returns the secret value on success. Successful values still enter the agent transcript; use only when that disclosure is intended. It does not write env files.
+`secrets_exec` leases named secrets into one child process's environment. Values stay in memory and never become tool results or env files. Read credentials from the environment inside the command, not from a preceding lease call.
 
 ```text
-secrets_lease {"name":"slack_bot_token","ttl":"30m","client_id":"pi-agent"}
+secrets_exec {"env":{"SLACK_BOT_TOKEN":"slack_bot_token"},"command":["node","scripts/slack-task.mjs"],"ttl":"30m","timeout_seconds":120}
 ```
 
-The CLI runs directly with an argument array, without a shell. Names must match `^[A-Za-z0-9._:-]{1,128}$`, client IDs `^[A-Za-z0-9._:-]{1,64}$`, and TTLs `^\d+[smh]$` (for example, `30m` or `1h`). Defaults are `1h` and `pi-agent`. Invalid inputs never spawn the CLI. Success requires exit 0 and non-empty trimmed stdout, even when the value contains `error`.
+`env` maps environment variable names (`^[A-Z_][A-Z0-9_]{0,63}$`) to secret names (`^[A-Za-z0-9._:-]{1,128}$`). `command` is a non-empty argv array, never a shell string. Optional `cwd` selects the child's directory. TTLs match `^\d+[smh]$`, default `1h`. Leases use client ID `pi-agent`. Each lease has a 10-second deadline. The child timeout defaults to 120 seconds, must be positive, and cannot exceed 1800 seconds. Validation finishes before any process starts. The child inherits the parent environment with the requested variables merged in.
 
-Failures always contain three lines: `secrets_lease failed: …`, `Why: …`, and `Next: …`. The next line gives a tool call or command for invalid input, unknown names, daemon connection failures, timeouts, or unknown failures. Only bounded, recognised stderr diagnostics or JSON failure envelopes select the failure category. Raw stdout, stderr, JSON fields, and exception messages are never copied into failure text. Unknown failures point to `secrets_audit {"tail": 5}` and `secrets_status {}`. After starting a missing daemon with `secrets serve &`, or checking status after a timeout, retry the original lease.
+The CLI and child run directly with literal argv, without a shell. If a shell is necessary, request it explicitly: `"command":["bash","-lc","node scripts/task.mjs"]`. **Shell scripts can leak credentials if they echo, transform, persist or transmit them.** Only run trusted commands. This is output hygiene, not a sandbox: the child and its descendants can access the injected values and write files or contact services.
 
-Tools: `secrets_lease`, `secrets_status`, `secrets_revoke`, `secrets_audit`
+Both stdout and stderr are redacted before capture, including matches split across chunks. Matching covers raw values, URL/form encoding, JSON escaping, base64 (padded and unpadded), and base64url. Matches become equal-length `*` masks so removal cannot join fragments into another value. Deliberate transforms such as reversing a string or hashing it, arbitrary alternative encodings, partial echoes, and external writes are **not caught**. Avoid printing credentials even with redaction enabled.
+
+Results include `exit_code`, `signal`, `duration_ms`, `injected_vars` (names only), `stdout`, `stderr`, and `truncated`. Combined output is capped at 50 KB with an explicit truncation note. The cap applies to captured output, not JSON escaping or metadata. A timeout kills the owned process group on POSIX and returns partial redacted output. Windows kills the direct child only.
+
+Failures have three lines: `secrets_exec failed: …`, `Why: …`, and an exact `Next: …` repair hint. Lease failures name the variable and secret but withhold untrusted diagnostics. Unknown failures point to `secrets_audit {"tail": 5}` and `secrets_status {}`. Missing executables give `Next: bash: which <cmd>`. Non-zero exits and signals are command results, not tool failures: they use `secrets_exec exited: …`, include the redacted result on the `Why:` line, and tell the agent to inspect that output before retrying. Timeout results use the same three-line shape and include partial output.
+
+`secrets_lease` is retired. It never starts a lease or returns a value. Existing callers receive exactly three lines, with the requested name and a suggested environment variable:
+
+```text
+secrets_lease no longer returns values: they land in transcripts.
+Why: secrets now run through secrets_exec, which injects them into one command's environment.
+Next: secrets_exec {"env":{"SLACK_BOT_TOKEN":"slack_bot_token"},"command":["<cmd>","..."]}
+```
+
+Tools: `secrets_exec`, `secrets_lease` (migration instructions only), `secrets_status`, `secrets_revoke`, `secrets_audit`. Status, revoke and audit are unchanged.
 
 Requires [agent-secrets](https://github.com/joelhooks/agent-secrets) daemon running.
 
