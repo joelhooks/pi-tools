@@ -8,6 +8,22 @@ logs="$HOME/.joelclaw/logs"
 secret_name="session_recall_mcp_bearer_token"
 uid=$(id -u)
 
+render_wrapper() {
+  r_node_bin=$1
+  r_secrets_bin=$2
+  r_server_source=$3
+  cat <<EOF
+#!/bin/sh
+set -eu
+if [ ! -f "$r_server_source" ] || [ ! -x "$r_node_bin" ]; then
+  printf 'session recall MCP: missing server or node; re-run install-executor-memory-service.sh install <release-root>\\n' >&2
+  exit 78
+fi
+TOKEN="\$("$r_secrets_bin" lease "$secret_name" --ttl 24h)"
+exec env NODE_ENV=production PATH="$HOME/.local/bin:$HOME/.local/share/fnm/aliases/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" SESSION_RECALL_MCP_TOKEN="\$TOKEN" SESSION_RECALL_MCP_PORT=4792 "$r_node_bin" "$r_server_source"
+EOF
+}
+
 case "${1:-}" in
   install)
     release_root=${2:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
@@ -65,12 +81,7 @@ case "${1:-}" in
       "$server_source"
 
     mkdir -p "$(dirname "$wrapper")" "$HOME/Library/LaunchAgents" "$logs"
-    cat >"$wrapper_stage" <<EOF
-#!/bin/sh
-set -eu
-TOKEN="\$("$secrets_bin" lease "$secret_name" --ttl 24h)"
-exec env NODE_ENV=production PATH="$HOME/.local/bin:$HOME/.local/share/fnm/aliases/default/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" SESSION_RECALL_MCP_TOKEN="\$TOKEN" SESSION_RECALL_MCP_PORT=4792 "$node_bin" "$server_source"
-EOF
+    render_wrapper "$node_bin" "$secrets_bin" "$server_source" >"$wrapper_stage"
     chmod 700 "$wrapper_stage"
     cat >"$plist_stage" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -82,6 +93,7 @@ EOF
   <array><string>$wrapper</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>60</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>$logs/session-recall-mcp.log</string>
   <key>StandardErrorPath</key><string>$logs/session-recall-mcp.error.log</string>
@@ -125,12 +137,15 @@ EOF
     rollback_needed=false
     rm -f "$wrapper_backup" "$plist_backup"
     ;;
+  render-wrapper)
+    render_wrapper "${NODE_BIN:-$(command -v node)}" "${SECRETS_BIN:-$(command -v secrets)}" "${2:?release root}/session-reader/mcp-http-server.ts"
+    ;;
   uninstall)
     launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
     rm -f "$plist" "$wrapper"
     ;;
   *)
-    printf 'usage: %s install|uninstall [release-root]\n' "$0" >&2
+    printf 'usage: %s install|uninstall|render-wrapper [release-root]\n' "$0" >&2
     exit 2
     ;;
 esac
