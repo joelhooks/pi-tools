@@ -1,9 +1,7 @@
 import { execFile } from "node:child_process";
-import { createReadStream } from "node:fs";
 import { open, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { Result, Schema } from "effect";
 import {
@@ -16,6 +14,8 @@ import {
   type Transcript,
   type TranscriptEntry,
 } from "./domain.ts";
+
+import { readBoundedJsonl } from "./streaming.ts";
 
 const DISCOVERY_HARD_LIMIT = 50_000;
 const OPENCODE_MAX_MESSAGES_PER_SESSION = 2_000;
@@ -119,31 +119,7 @@ async function discoverFiles(
     .slice(0, Math.max(0, query.maxFiles));
 }
 
-export async function readJsonlTranscript(path: string, signal: AbortSignal): Promise<Transcript> {
-  const entries: TranscriptEntry[] = [];
-  let redacted = false;
-  let lineNumber = 0;
-  const stream = createReadStream(path, { encoding: "utf8" });
-  const onAbort = () => stream.destroy(new Error("Operation aborted"));
-  signal.addEventListener("abort", onAbort, { once: true });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
-
-  try {
-    for await (const line of lines) {
-      checkSignal(signal);
-      lineNumber += 1;
-      const parsed = parseTranscriptLine(line, lineNumber);
-      if (parsed.redacted) redacted = true;
-      if (parsed.entry) entries.push(parsed.entry);
-    }
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-    lines.close();
-    stream.destroy();
-  }
-
-  return { ...sessionMetaFromPath(path), path, entries, redacted };
-}
+export const readJsonlTranscript = readBoundedJsonl;
 
 const CursorMetaSchema = Schema.Struct({
   agentId: Schema.optional(Schema.String),

@@ -4,8 +4,6 @@ import { homedir } from "node:os";
 import { Effect, Schema } from "effect";
 import { assessCaptureHealth, resolveCentralUrl } from "./capture-paths.ts";
 import {
-  evidence,
-  extractTranscript,
   inspectTranscript,
   type LocalSessionHit,
   type SessionAgentFilter,
@@ -33,6 +31,7 @@ import {
   ToolPayloadSchema,
 } from "./presenter.ts";
 import { SessionStore, SessionStoreLive } from "./session-store.ts";
+import { TRUNCATION_NOTICE } from "./jsonl.ts";
 
 interface SearchInput {
   readonly query: string;
@@ -249,7 +248,7 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
     } satisfies ToolPayload;
   }
   const store = yield* SessionStore;
-  const localHits = yield* store.searchLocal({
+  const { hits: localHits, truncatedFiles } = yield* store.searchLocal({
     query: input.query,
     agent: input.agent,
     limit: input.limit,
@@ -260,6 +259,8 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
     [
       "# Session search",
       "Effect v4 local engine. Use flowing recall before raw evidence drill-down.",
+      ...(truncatedFiles > 0 && !localHits.some((hit) => hit.truncated)
+        ? ["- Truncated evidence encountered in other scanned files; results may be incomplete."] : []),
       "\n## Local transcript details",
       renderLocalHits(localHits),
     ].join("\n"),
@@ -276,6 +277,7 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
       source: input.source,
       machine: input.machine,
       localHits,
+      truncatedFiles,
     },
   } satisfies ToolPayload;
 });
@@ -283,11 +285,7 @@ const runSearch = Effect.fn("SessionEngine.search")(function* (input: SearchInpu
 const runInspect = Effect.fn("SessionEngine.inspect")(function* (input: InspectInput) {
   const store = yield* SessionStore;
   const path = yield* store.resolvePath(input.sessionId);
-  const transcript = yield* store.readTranscript(path);
-  const result = yield* Effect.try({
-    try: () => inspectTranscript(transcript, input.around, input.before, input.after),
-    catch: (cause) => readerError("SessionEngine.inspect", cause),
-  });
+  const result = yield* store.inspect(path, input.around, input.before, input.after);
 
   return {
     text: renderInspect(result),
@@ -305,8 +303,7 @@ const runInspect = Effect.fn("SessionEngine.inspect")(function* (input: InspectI
 const runExtract = Effect.fn("SessionEngine.extract")(function* (input: ExtractInput) {
   const store = yield* SessionStore;
   const path = yield* store.resolvePath(input.sessionId);
-  const transcript = yield* store.readTranscript(path);
-  const extraction = extractTranscript(transcript, input.query);
+  const extraction = yield* store.extract(path, input.query);
   return {
     text: renderExtraction(extraction),
     details: {
@@ -319,6 +316,8 @@ const runExtract = Effect.fn("SessionEngine.extract")(function* (input: ExtractI
       query: input.query,
       lineCount: extraction.lineCount,
       redacted: extraction.redacted,
+      truncated: extraction.truncated ?? false,
+      truncationReason: extraction.truncationReason,
       compatibilityAgent: input.compatibilityAgent,
       ignoredModel: input.ignoredModel,
     },
@@ -362,30 +361,28 @@ function decodeExpansionCursor(value: string): ExpansionCursor {
 const runExpand = Effect.fn("SessionEngine.expand")(function* (input: ExpandInput) {
   const store = yield* SessionStore;
   const path = yield* store.resolvePath(input.sessionId);
-  const transcript = yield* store.readTranscript(path);
   const decoded = input.cursor
     ? decodeExpansionCursor(input.cursor)
     : {
         sessionId: input.sessionId,
-        path: transcript.path,
-        offset: input.direction === "backward" ? transcript.entries.length : 0,
+        path,
+        offset: undefined,
         direction: input.direction ?? "forward",
       };
-  if (decoded.sessionId !== input.sessionId || decoded.path !== transcript.path) {
+  if (decoded.sessionId !== input.sessionId || decoded.path !== path) {
     throw readerError(
       "SessionEngine.expand.cursorMismatch",
       new Error("Expansion cursor belongs to a different session or transcript path"),
     );
   }
   const direction = decoded.direction;
-  const offset = Math.min(transcript.entries.length, Math.max(0, Math.floor(decoded.offset)));
   const limit = Math.min(40, Math.max(1, Math.floor(input.limit)));
-  const start = direction === "backward" ? Math.max(0, offset - limit) : offset;
-  const end =
-    direction === "backward" ? offset : Math.min(transcript.entries.length, offset + limit);
-  const entries = transcript.entries.slice(start, end).map(evidence);
+  const { transcript, start, totalEntries } = yield* store.readPage(path, decoded.offset, direction, limit);
+  // readPage already returns evidence previews for both JSONL and native adapters.
+  const entries = transcript.entries;
+  const end = start + entries.length;
   const nextOffset = direction === "backward" ? start : end;
-  const hasMore = direction === "backward" ? start > 0 : end < transcript.entries.length;
+  const hasMore = direction === "backward" ? start > 0 : end < totalEntries;
   const page = {
     sessionId: transcript.sessionId,
     startedAt: transcript.startedAt,
@@ -393,7 +390,9 @@ const runExpand = Effect.fn("SessionEngine.expand")(function* (input: ExpandInpu
     path: transcript.path,
     direction,
     offset: start,
-    totalEntries: transcript.entries.length,
+    totalEntries,
+    truncated: transcript.truncated,
+    truncationReason: transcript.truncationReason,
     entries,
     nextCursor: hasMore
       ? encodeExpansionCursor({
@@ -420,7 +419,7 @@ const runExpand = Effect.fn("SessionEngine.expand")(function* (input: ExpandInpu
 
 const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: ChunksInput) {
   const store = yield* SessionStore;
-  const rawHits = yield* store.searchLocal({
+  const { hits: rawHits, truncatedFiles } = yield* store.searchLocal({
     query: input.query,
     agent: "all",
     limit: input.limit + 1,
@@ -438,17 +437,9 @@ const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: 
   }> = [];
 
   for (const hit of hits) {
-    const transcript = yield* store.readTranscript(hit.path);
-    const inspect = yield* Effect.try({
-      try: () =>
-        inspectTranscript(
-          transcript,
-          escapeRegex(input.query),
-          input.contextBefore,
-          input.contextAfter,
-        ),
-      catch: (cause) => readerError("SessionEngine.localChunks", cause),
-    });
+    const inspect = yield* store.inspect(
+      hit.path, escapeRegex(input.query), input.contextBefore, input.contextAfter,
+    );
     chunks.push({ hit, inspect });
   }
 
@@ -459,6 +450,8 @@ const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: 
     `- shown: ${chunks.length}`,
     `- excluded current session: ${excluded}`,
     `- context: before=${input.contextBefore}, after=${input.contextAfter}`,
+    ...(truncatedFiles > 0 && !chunks.some((chunk) => chunk.inspect.truncated)
+      ? ["- Truncated evidence encountered in other scanned files; results may be incomplete."] : []),
     ...(input.warnings.length > 0
       ? ["- warnings:", ...input.warnings.map((warning) => `  - ${warning}`)]
       : []),
@@ -469,9 +462,10 @@ const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: 
       `## ${index + 1}. ${chunk.hit.agent} ${chunk.hit.sessionId ?? "unknown"}`,
       `- path: ${chunk.hit.path}`,
       `- matches: ${chunk.inspect.matches.length}`,
+      ...(chunk.inspect.truncated ? [`- ${chunk.inspect.truncationReason ?? TRUNCATION_NOTICE}`] : []),
       ...chunk.inspect.matches.map((match) => {
         const direct = match.entries.find((entry) => entry.line === match.matchLine);
-        return `- L${match.matchLine}: ${direct?.text ?? "match text unavailable"}`;
+        return `- L${match.matchLine}${direct?.truncated ? " [truncated prefix]" : ""}: ${direct?.text ?? "match text unavailable"}`;
       }),
     );
   }
@@ -486,11 +480,13 @@ const runLocalChunks = Effect.fn("SessionEngine.localChunks")(function* (input: 
       source: "local",
       shown: chunks.length,
       excludedCurrent: excluded,
+      truncatedFiles,
       warnings: input.warnings,
       chunks: chunks.map(({ hit, inspect }) => ({
         sessionId: hit.sessionId,
         path: hit.path,
         matchCount: inspect.matches.length,
+        truncated: inspect.truncated ?? false,
       })),
     },
   } satisfies ToolPayload;

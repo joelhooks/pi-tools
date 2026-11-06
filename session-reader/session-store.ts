@@ -1,8 +1,6 @@
-import { createReadStream } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import * as os from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { Context, Effect, Layer, Schema } from "effect";
 import {
   type CaptureFileStatus,
@@ -11,10 +9,16 @@ import {
 } from "./capture-paths.ts";
 import {
   compactText,
+  evidence,
+  inspectTranscript,
+  extractTranscript,
+  type InspectResult,
+  type Extraction,
   type LocalSessionHit,
   LocalSessionHitSchema,
   matchesQuery,
-  parseTranscriptLine,
+  matchesLowerQuery,
+  lowercaseText,
   queryTerms,
   type SessionAgent,
   type SessionAgentFilter,
@@ -31,6 +35,11 @@ import {
   type AdapterHealth,
   type SessionAdapter,
 } from "./adapters.ts";
+
+import { scanJsonl, MAX_JSONL_LINE_BYTES, JSONL_PREFIX_BYTES, TRUNCATION_NOTICE, type JsonlLine } from "./jsonl.ts";
+import { parseJsonlLine } from "./jsonl-entry.ts";
+import { inspectJsonl, extractJsonl } from "./streaming.ts";
+import { readJsonlPage, type TranscriptPage } from "./jsonl-page.ts";
 
 const DISCOVERY_HARD_LIMIT = 50_000;
 const CAPTURE_TAIL_BYTES = 64 * 1024;
@@ -49,9 +58,12 @@ export interface SearchLocalInput {
 export interface Interface {
   readonly resolvePath: (idOrPath: string) => Effect.Effect<string, SessionReaderError>;
   readonly readTranscript: (path: string) => Effect.Effect<Transcript, SessionReaderError>;
+  readonly inspect: (path: string, around: string, before: number, after: number) => Effect.Effect<InspectResult, SessionReaderError>;
+  readonly extract: (path: string, query: string) => Effect.Effect<Extraction, SessionReaderError>;
+  readonly readPage: (path: string, offset: number | undefined, direction: "forward" | "backward", limit: number) => Effect.Effect<TranscriptPage, SessionReaderError>;
   readonly searchLocal: (
     input: SearchLocalInput,
-  ) => Effect.Effect<readonly LocalSessionHit[], SessionReaderError>;
+  ) => Effect.Effect<{ readonly hits: readonly LocalSessionHit[]; readonly truncatedFiles: number }, SessionReaderError>;
   readonly captureState: Effect.Effect<readonly CaptureFileStatus[], SessionReaderError>;
   readonly adapterHealth: Effect.Effect<readonly AdapterHealth[], SessionReaderError>;
 }
@@ -133,7 +145,7 @@ interface ScanJsonlLinesInput {
   readonly file: SessionFile;
   readonly query: string;
   readonly terms: readonly string[];
-  readonly lines: AsyncIterable<string>;
+  readonly lines: AsyncIterable<string | JsonlLine>;
   readonly signal: AbortSignal;
 }
 
@@ -149,21 +161,29 @@ export async function scanJsonlLines({
   const maximumTermCount = new Set(terms).size;
   let directMatch = false;
   let lineNumber = 0;
+  let truncated = false;
 
   for await (const line of lines) {
     if (signal.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
     lineNumber += 1;
-    const entry = parseTranscriptLine(line, lineNumber).entry;
+    const oversized = typeof line === "string" && Buffer.byteLength(line, "utf8") > MAX_JSONL_LINE_BYTES;
+    const record: JsonlLine = typeof line === "string" ? {
+      line: lineNumber, offset: 0, truncated: oversized,
+      text: oversized ? Buffer.from(line.slice(0, JSONL_PREFIX_BYTES)).subarray(0, JSONL_PREFIX_BYTES).toString("utf8") : line,
+    } : line;
+    truncated ||= record.truncated;
+    const entry = parseJsonlLine(record).entry;
     if (!entry) continue;
 
-    const lower = entry.text.toLowerCase();
+    const lower = lowercaseText(entry.text);
     for (const term of terms) {
       if (lower.includes(term)) matchedTerms.add(term);
     }
-    if (matchesQuery(entry.text, query)) {
+    if (matchesLowerQuery(lower, query)) {
       directMatch = true;
       if (snippets.length < 3) {
-        snippets.push(compactText(entry.text, 320) ?? entry.text.slice(0, 320));
+        const preview = compactText(entry.text, 320) ?? entry.text.slice(0, 320);
+        snippets.push(entry.truncated ? `L${entry.line} [truncated prefix]: ${preview}` : preview);
       }
     }
 
@@ -182,26 +202,29 @@ export async function scanJsonlLines({
     mtime: file.mtime,
     snippets: snippets.length > 0 ? snippets : [compactText(file.path, 320) ?? file.path],
     score: matchedTerms.size + (directMatch ? 1 : 0) + (pathMatch ? 1 : 0),
+    ...(truncated ? { truncated: true } : {}),
   };
 }
 
-async function scanJsonlSessionFile(
+export async function scanJsonlSessionFile(
   file: SessionFile,
   query: string,
   terms: readonly string[],
   signal: AbortSignal,
+  onTruncated?: () => void,
 ): Promise<LocalSessionHit | undefined> {
-  const stream = createReadStream(file.path, { encoding: "utf8" });
-  const onAbort = () => stream.destroy(new Error("Operation aborted"));
-  signal.addEventListener("abort", onAbort, { once: true });
-  const lines = createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
-  try {
-    return await scanJsonlLines({ file, query, terms, lines, signal });
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-    lines.close();
-    stream.destroy();
-  }
+  let truncated = false;
+  const lines = (async function* () {
+    for await (const line of scanJsonl(file.path, signal)) {
+      truncated ||= line.truncated;
+      yield line;
+    }
+  })();
+  const hit = await scanJsonlLines({ file, query, terms, lines, signal });
+  if (truncated) onTruncated?.();
+  return hit && truncated
+    ? { ...hit, truncated: true, snippets: [...hit.snippets, TRUNCATION_NOTICE] }
+    : hit;
 }
 
 async function scanSessionFile(
@@ -209,13 +232,14 @@ async function scanSessionFile(
   query: string,
   terms: readonly string[],
   signal: AbortSignal,
+  onTruncated?: () => void,
 ): Promise<LocalSessionHit | undefined> {
   const adapter = adapterFor(file.agent);
   if (!adapter) return undefined;
 
   if (file.path.endsWith(".jsonl")) {
     try {
-      return await scanJsonlSessionFile(file, query, terms, signal);
+      return await scanJsonlSessionFile(file, query, terms, signal, onTruncated);
     } catch (cause) {
       if (signal.aborted) throw cause;
       return undefined;
@@ -230,11 +254,11 @@ async function scanSessionFile(
   try {
     transcript = await adapter.read(file, signal);
     for (const entry of transcript.entries) {
-      const lower = entry.text.toLowerCase();
+      const lower = lowercaseText(entry.text);
       for (const term of terms) {
         if (lower.includes(term)) matchedTerms.add(term);
       }
-      if (matchesQuery(entry.text, query)) {
+      if (matchesLowerQuery(lower, query)) {
         directMatch = true;
         if (snippets.length < 3) {
           snippets.push(compactText(entry.text, 320) ?? entry.text.slice(0, 320));
@@ -246,8 +270,13 @@ async function scanSessionFile(
     return undefined;
   }
 
+  if (transcript.truncated) onTruncated?.();
   const pathMatch = matchesQuery(file.path, query);
   if (!directMatch && matchedTerms.size === 0 && !pathMatch) return undefined;
+  if (transcript.truncated) {
+    if (snippets.length === 0) snippets.push(compactText(file.path, 320) ?? file.path);
+    snippets.push(transcript.truncationReason ?? TRUNCATION_NOTICE);
+  }
   return {
     agent: file.agent,
     sessionId: transcript.sessionId,
@@ -257,6 +286,7 @@ async function scanSessionFile(
     mtime: file.mtime,
     snippets: snippets.length > 0 ? snippets : [compactText(file.path, 320) ?? file.path],
     score: matchedTerms.size + (directMatch ? 1 : 0) + (pathMatch ? 1 : 0),
+    ...(transcript.truncated ? { truncated: true } : {}),
   };
 }
 
@@ -339,29 +369,100 @@ const readTranscriptEffect = Effect.fn("SessionStore.readTranscript")((path: str
   ),
 );
 
+function isLineTranscript(path: string): boolean {
+  const adapter = adapterForPath(path);
+  return path.endsWith(".jsonl") && adapter?.runtime !== "cursor" && adapter?.runtime !== "opencode";
+}
+
+const inspect = Effect.fn("SessionStore.inspect")((path: string, around: string, before: number, after: number) =>
+  Effect.tryPromise({
+    try: async (signal) => isLineTranscript(path)
+      ? inspectJsonl(path, around, before, after, signal)
+      : inspectTranscript(await readSessionFile(path, signal), around, before, after),
+    catch: (cause) => readerError("SessionStore.inspect", cause),
+  }),
+);
+
+const extract = Effect.fn("SessionStore.extract")((path: string, query: string) =>
+  Effect.tryPromise({
+    try: async (signal) => isLineTranscript(path)
+      ? extractJsonl(path, query, signal)
+      : extractTranscript(await readSessionFile(path, signal), query),
+    catch: (cause) => readerError("SessionStore.extract", cause),
+  }),
+);
+
+const readPage = Effect.fn("SessionStore.readPage")((path: string, offset: number | undefined, direction: "forward" | "backward", limit: number) =>
+  Effect.tryPromise({
+    try: async (signal) => {
+      if (isLineTranscript(path)) return readJsonlPage(path, offset, direction, limit, signal);
+      const transcript = await readSessionFile(path, signal);
+      const totalEntries = transcript.entries.length;
+      const clamped = Math.min(totalEntries, Math.max(0, Math.floor(offset ?? (direction === "backward" ? totalEntries : 0))));
+      const start = direction === "backward" ? Math.max(0, clamped - limit) : clamped;
+      const end = direction === "backward" ? clamped : Math.min(totalEntries, clamped + limit);
+      return {
+        transcript: { ...transcript, entries: transcript.entries.slice(start, end).map((entry) => ({ ...evidence(entry), raw: undefined })) },
+        start, totalEntries,
+      };
+    },
+    catch: (cause) => readerError("SessionStore.readPage", cause),
+  }),
+);
+
+/** Keep ordinary stores parallel; a >64 MiB (or unknown-size) file runs alone. */
+export const LARGE_SEARCH_FILE_BYTES = 64 * 1024 * 1024;
+export function searchFileBatches(files: readonly { readonly file: SessionFile; readonly size: number }[]): readonly (readonly SessionFile[])[] {
+  const batches: SessionFile[][] = [];
+  let small: SessionFile[] = [];
+  const flush = () => { if (small.length > 0) batches.push(small); small = []; };
+  for (const { file, size } of files) {
+    if (size > LARGE_SEARCH_FILE_BYTES || !Number.isFinite(size)) {
+      flush();
+      batches.push([file]);
+    } else {
+      small.push(file);
+      if (small.length === 8) flush();
+    }
+  }
+  flush();
+  return batches;
+}
+
 const searchLocal = Effect.fn("SessionStore.searchLocal")((input: SearchLocalInput) =>
   Effect.tryPromise({
     try: async (signal) => {
       const files = await listFiles(input.agent, input.maxFiles, signal);
       const terms = queryTerms(input.query);
       const hits: LocalSessionHit[] = [];
+      let truncatedFiles = 0;
 
       for (let offset = 0; offset < files.length; offset += 8) {
         if (signal.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError");
-        const batch = await Promise.all(
-          files.slice(offset, offset + 8).map((file) => scanSessionFile(file, input.query, terms, signal)),
-        );
-        hits.push(...batch.filter((hit): hit is LocalSessionHit => hit !== undefined));
+        const sized = await Promise.all(files.slice(offset, offset + 8).map(async (file) => {
+          let size = Infinity;
+          try { size = (await stat(file.path)).size; } catch { /* native locator or disappearing file: scan alone */ }
+          return { file, size };
+        }));
+        for (const group of searchFileBatches(sized)) {
+          const batch = await Promise.all(group.map((file) =>
+            scanSessionFile(file, input.query, terms, signal, () => { truncatedFiles += 1; }),
+          ));
+          hits.push(...batch.filter((hit): hit is LocalSessionHit => hit !== undefined));
+        }
         if (hits.length >= input.limit) break;
       }
 
-      return hits
-        .sort((left, right) => right.score - left.score || +new Date(right.mtime) - +new Date(left.mtime))
-        .slice(0, input.limit);
+      return {
+        hits: hits
+          .sort((left, right) => right.score - left.score || +new Date(right.mtime) - +new Date(left.mtime))
+          .slice(0, input.limit),
+        truncatedFiles,
+      };
     },
     catch: (cause) => readerError("SessionStore.searchLocal", cause),
   }).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(LocalSessionHitSchema))),
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ hits: Schema.Array(LocalSessionHitSchema), truncatedFiles: Schema.Number }))),
     Effect.mapError((cause) => readerError("SessionStore.decodeSearchResults", cause)),
   ),
 );
@@ -380,6 +481,9 @@ const adapterHealth = Effect.tryPromise({
 export const SessionStoreLive = Layer.succeed(SessionStore)({
   resolvePath,
   readTranscript: readTranscriptEffect,
+  inspect,
+  extract,
+  readPage,
   searchLocal,
   captureState,
   adapterHealth,

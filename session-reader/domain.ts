@@ -42,6 +42,7 @@ export interface SessionMeta extends Schema.Schema.Type<typeof SessionMetaSchema
 export const TranscriptEntrySchema = Schema.Struct({
   line: Schema.Number,
   raw: Schema.Unknown,
+  truncated: Schema.optional(Schema.Boolean),
   text: Schema.String,
   role: OptionalString,
   kind: OptionalString,
@@ -50,6 +51,7 @@ export interface TranscriptEntry extends Schema.Schema.Type<typeof TranscriptEnt
 
 export const EvidenceSchema = Schema.Struct({
   line: Schema.Number,
+  truncated: Schema.optional(Schema.Boolean),
   role: OptionalString,
   kind: OptionalString,
   text: Schema.String,
@@ -61,6 +63,8 @@ export const TranscriptSchema = Schema.Struct({
   path: Schema.String,
   entries: Schema.Array(TranscriptEntrySchema),
   redacted: Schema.Boolean,
+  truncated: Schema.optional(Schema.Boolean),
+  truncationReason: OptionalString,
 });
 export interface Transcript extends Schema.Schema.Type<typeof TranscriptSchema> {}
 
@@ -78,6 +82,8 @@ export const InspectResultSchema = Schema.Struct({
   around: Schema.String,
   matches: Schema.Array(InspectMatchSchema),
   redacted: Schema.Boolean,
+  truncated: Schema.optional(Schema.Boolean),
+  truncationReason: OptionalString,
 });
 export interface InspectResult extends Schema.Schema.Type<typeof InspectResultSchema> {}
 
@@ -96,6 +102,8 @@ export const ExtractionSchema = Schema.Struct({
   blockers: Schema.Array(EvidenceSchema),
   nextActions: Schema.Array(EvidenceSchema),
   redacted: Schema.Boolean,
+  truncated: Schema.optional(Schema.Boolean),
+  truncationReason: OptionalString,
 });
 export interface Extraction extends Schema.Schema.Type<typeof ExtractionSchema> {}
 
@@ -106,6 +114,7 @@ export const LocalSessionHitSchema = Schema.Struct({
   mtime: Schema.String,
   snippets: Schema.Array(Schema.String),
   score: Schema.Number,
+  truncated: Schema.optional(Schema.Boolean),
 });
 export interface LocalSessionHit extends Schema.Schema.Type<typeof LocalSessionHitSchema> {}
 
@@ -151,14 +160,26 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function detachedText(value: string): string {
+  // A V8 sliced string can pin a multi-MiB parent. UTF-16 copying preserves
+  // code units exactly, including a surrogate split at a preview boundary.
+  return Buffer.from(value, "utf16le").toString("utf16le");
+}
+
+function normalizedText(value: string): string {
+  // Single ASCII spaces already have the normalized form. Avoid allocating a
+  // replacement for every word in multi-MiB tool output when nothing changes.
+  return (/[^\S ]| {2}/u.test(value) ? value.replace(/\s+/g, " ") : value).trim();
+}
+
 export function compactText(value: unknown, maxChars = 600): string | undefined {
   if (typeof value !== "string") return undefined;
-  const compacted = value.replace(/\s+/g, " ").trim();
+  const compacted = normalizedText(value);
   if (!compacted) return undefined;
   if (maxChars <= 0) return "";
   return compacted.length > maxChars
-    ? `${compacted.slice(0, Math.max(0, maxChars - 1))}…`
-    : compacted;
+    ? detachedText(`${compacted.slice(0, Math.max(0, maxChars - 1))}…`)
+    : detachedText(compacted);
 }
 
 export function redactSecrets(input: string): {
@@ -172,48 +193,48 @@ export function redactSecrets(input: string): {
 
 export function redactUnknown(value: unknown): unknown {
   if (typeof value === "string") return redactSecrets(value).text;
-  if (Array.isArray(value)) return value.map(redactUnknown);
+  if (Array.isArray(value)) {
+    const safe = value.map(redactUnknown);
+    return safe.every((item, index) => item === value[index]) ? value : safe;
+  }
   if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-      key,
-      SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactUnknown(item),
-    ]),
-  );
+  let changed = false;
+  const entries = Object.entries(value).map(([key, item]) => {
+    const safe = SENSITIVE_KEY.test(key) ? "[REDACTED]" : redactUnknown(item);
+    changed ||= safe !== item;
+    return [key, safe];
+  });
+  return changed ? Object.fromEntries(entries) : value;
 }
 
-function flattenTranscript(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return value.map(flattenTranscript).filter(Boolean).join(" ");
-  if (typeof value !== "object") return String(value);
+const TRANSCRIPT_TEXT_KEYS = [
+  "role", "type", "payload", "toolName", "name", "command", "path", "content",
+  "text", "summary", "message", "stdout", "stderr", "arguments", "input", "result",
+] as const;
 
-  const record = value as Record<string, unknown>;
+function flattenTranscript(value: unknown): string {
+  // Join once. Joining at each message/content/part level creates several full
+  // copies of a near-cap payload and lets transient heap growth dominate RSS.
   const parts: string[] = [];
-  for (const key of [
-    "role",
-    "type",
-    "payload",
-    "toolName",
-    "name",
-    "command",
-    "path",
-    "content",
-    "text",
-    "message",
-    "stdout",
-    "stderr",
-    "arguments",
-    "input",
-    "result",
-  ]) {
-    if (key in record) parts.push(flattenTranscript(record[key]));
-  }
-  if (parts.length === 0) {
-    for (const item of Object.values(record)) parts.push(flattenTranscript(item));
-  }
-  return parts.filter(Boolean).join(" ");
+  const collect = (item: unknown): void => {
+    if (item == null) return;
+    if (Array.isArray(item)) { for (const child of item) collect(child); return; }
+    if (typeof item !== "object") { if (item !== "") parts.push(String(item)); return; }
+    const record = item as Record<string, unknown>;
+    let known = false;
+    for (const key of TRANSCRIPT_TEXT_KEYS) {
+      if (key in record) {
+        // Compaction summaries are text; native adapters also use a boolean
+        // summary metadata field, which must not become new transcript text.
+        if (key === "summary" && typeof record[key] !== "string") continue;
+        known = true;
+        collect(record[key]);
+      }
+    }
+    if (!known) for (const child of Object.values(record)) collect(child);
+  };
+  collect(value);
+  return parts.join(" ");
 }
 
 function roleOf(raw: unknown, text: string): string | undefined {
@@ -313,7 +334,15 @@ export function parseTranscriptLine(
   } catch {
     // Plain text transcripts are valid evidence too.
   }
-  const flattened = flattenTranscript(raw).replace(/\s+/g, " ").trim();
+  return parseTranscriptValue(raw, lineNumber);
+}
+
+/** Flatten an already-decoded value without serializing and parsing it again. */
+export function parseTranscriptValue(
+  raw: unknown,
+  lineNumber: number,
+): { readonly entry: TranscriptEntry; readonly redacted: boolean } {
+  const flattened = normalizedText(flattenTranscript(raw));
   const safe = redactSecrets(flattened);
   return {
     entry: {
@@ -346,12 +375,21 @@ export function queryTerms(query: string): readonly string[] {
     .filter((term) => term.length > 2);
 }
 
-export function matchesQuery(text: string, query: string): boolean {
-  const lower = text.toLowerCase();
+export function lowercaseText(text: string): string {
+  // Lowercase ASCII payloads need no full-size case-conversion allocation.
+  return /[A-Z]|[^\x00-\x7f]/u.test(text) ? text.toLowerCase() : text;
+}
+
+/** Reuse a caller's folded text instead of allocating it again for direct hits. */
+export function matchesLowerQuery(lower: string, query: string): boolean {
   const exact = query.toLowerCase().trim();
   if (exact && lower.includes(exact)) return true;
   const terms = queryTerms(query);
   return terms.length > 0 && terms.every((term) => lower.includes(term));
+}
+
+export function matchesQuery(text: string, query: string): boolean {
+  return matchesLowerQuery(lowercaseText(text), query);
 }
 
 export function evidence(entry: TranscriptEntry): Evidence {
@@ -359,7 +397,8 @@ export function evidence(entry: TranscriptEntry): Evidence {
     line: entry.line,
     role: entry.role,
     kind: entry.kind,
-    text: entry.text.slice(0, 600),
+    text: detachedText(entry.text.slice(0, 600)),
+    ...(entry.truncated ? { truncated: true } : {}),
   };
 }
 
@@ -391,7 +430,7 @@ function extractFiles(entries: readonly TranscriptEntry[]): readonly string[] {
   const pattern =
     /(?:\.{0,2}\/|~\/|\/Users\/|packages\/|apps\/|docs\/|skills\/|scripts\/)[A-Za-z0-9._/@:+-]+/gu;
   for (const entry of entries) {
-    for (const match of entry.text.matchAll(pattern)) files.add(match[0]);
+    for (const match of entry.text.matchAll(pattern)) files.add(detachedText(match[0]));
     if (files.size >= 80) break;
   }
   return [...files].slice(0, 80);
@@ -428,6 +467,7 @@ export function inspectTranscript(
     around,
     matches,
     redacted: transcript.redacted,
+    ...(transcript.truncated ? { truncated: true, truncationReason: transcript.truncationReason } : {}),
   };
 }
 
@@ -483,5 +523,6 @@ export function extractTranscript(transcript: Transcript, query: string): Extrac
     blockers: regexEntries(fallback, blocker, 12),
     nextActions: regexEntries(fallback, next, 10),
     redacted: transcript.redacted,
+    ...(transcript.truncated ? { truncated: true, truncationReason: transcript.truncationReason } : {}),
   };
 }

@@ -5,6 +5,7 @@ import type { ComposedRecallResultBoundary } from "./flowing-recall.ts";
 import type { JoelclawResult } from "./joelclaw-index.ts";
 import type { CaptureFileStatus, CaptureHealth } from "./capture-paths.ts";
 import type { AdapterHealth } from "./adapters.ts";
+import { TRUNCATION_NOTICE } from "./jsonl.ts";
 
 export const MAX_TOOL_TEXT_CHARS = 24_000;
 const ENTRY_PREVIEW_CHARS = 360;
@@ -31,7 +32,7 @@ export function capText(value: string, maxChars = MAX_TOOL_TEXT_CHARS): string {
 }
 
 function evidenceLine(item: Evidence): string {
-  return `- L${item.line}${item.role ? ` ${item.role}` : ""}${item.kind ? `/${item.kind}` : ""}: ${item.text}`;
+  return `- L${item.line}${item.role ? ` ${item.role}` : ""}${item.kind ? `/${item.kind}` : ""}${item.truncated ? " [truncated prefix]" : ""}: ${item.text}`;
 }
 
 export function renderExtraction(extraction: Extraction): string {
@@ -50,6 +51,7 @@ export function renderExtraction(extraction: Extraction): string {
       `- query: ${compactText(extraction.query, ENTRY_PREVIEW_CHARS) ?? ""}`,
       `- lines: ${extraction.lineCount}`,
       `- redacted: ${extraction.redacted}`,
+      ...(extraction.truncated ? [`- ${extraction.truncationReason ?? TRUNCATION_NOTICE}`] : []),
       "",
       section("User prompts", extraction.userPrompts),
       section("Decisions", extraction.decisions),
@@ -83,6 +85,7 @@ export function renderInspect(result: InspectResult, maxChars = MAX_TOOL_TEXT_CH
     `- regex: ${compactText(result.around, ENTRY_PREVIEW_CHARS) ?? ""}`,
     `- matches: ${matches.length}`,
     `- redacted: ${result.redacted}`,
+    ...(result.truncated ? [`- ${result.truncationReason ?? TRUNCATION_NOTICE}`] : []),
     "",
     "## Direct matches",
   ];
@@ -91,7 +94,7 @@ export function renderInspect(result: InspectResult, maxChars = MAX_TOOL_TEXT_CH
   for (const match of matches) {
     const direct = match.entries.find((entry) => entry.line === match.matchLine);
     lines.push(
-      `- L${match.matchLine}${direct?.kind ? ` ${direct.kind}` : ""} · window L${match.startLine}-L${match.endLine}: ${compactText(direct?.text, ENTRY_PREVIEW_CHARS) ?? "match text unavailable"}`,
+      `- L${match.matchLine}${direct?.kind ? ` ${direct.kind}` : ""}${direct?.truncated ? " [truncated prefix]" : ""} · window L${match.startLine}-L${match.endLine}: ${compactText(direct?.text, ENTRY_PREVIEW_CHARS) ?? "match text unavailable"}`,
     );
   }
 
@@ -100,7 +103,7 @@ export function renderInspect(result: InspectResult, maxChars = MAX_TOOL_TEXT_CH
   if (context.length === 0) lines.push("- none");
   for (const entry of context) {
     lines.push(
-      `- L${entry.line}${entry.kind ? ` ${entry.kind}` : ""}: ${compactText(entry.text, ENTRY_PREVIEW_CHARS) ?? ""}`,
+      `- L${entry.line}${entry.kind ? ` ${entry.kind}` : ""}${entry.truncated ? " [truncated prefix]" : ""}: ${compactText(entry.text, ENTRY_PREVIEW_CHARS) ?? ""}`,
     );
   }
   return capText(lines.join("\n"), maxChars);
@@ -114,6 +117,8 @@ export function inspectDetails(result: InspectResult): Record<string, unknown> {
     path: result.path,
     around: compactText(result.around, ENTRY_PREVIEW_CHARS),
     redacted: result.redacted,
+    truncated: result.truncated ?? false,
+    truncationReason: result.truncationReason,
     matches: result.matches.map((match) => ({
       matchLine: match.matchLine,
       startLine: match.startLine,
@@ -132,6 +137,8 @@ export interface ExpansionPage {
   readonly direction: "forward" | "backward";
   readonly offset: number;
   readonly totalEntries: number;
+  readonly truncated?: boolean;
+  readonly truncationReason?: string;
   readonly entries: readonly Evidence[];
   readonly nextCursor?: string;
 }
@@ -147,6 +154,7 @@ export function renderExpansion(page: ExpansionPage): string {
       `- direction: ${page.direction}`,
       `- entries: ${page.entries.length} of ${page.totalEntries}`,
       `- offset: ${page.offset}`,
+      ...(page.truncated ? [`- ${page.truncationReason ?? TRUNCATION_NOTICE}`] : []),
       "",
       ...(page.entries.length > 0
         ? page.entries.map(evidenceLine)
@@ -167,6 +175,8 @@ export function expansionDetails(page: ExpansionPage): Record<string, unknown> {
     offset: page.offset,
     returnedEntries: page.entries.length,
     totalEntries: page.totalEntries,
+    truncated: page.truncated ?? false,
+    truncationReason: page.truncationReason,
     hasMore: Boolean(page.nextCursor),
     nextCursor: page.nextCursor,
   };
